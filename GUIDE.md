@@ -30,12 +30,12 @@ That's it. No pip installs, and the checking tools never touch the GPU.
 
 A folder of images. Say:
 
-> **"Train a character LoRA from `D:/data/marin`."**
+> **"Train a character LoRA from `D:/data/mychar`."**
 
 The agent will then, in order — asking you before anything changes on disk:
 
 1. Check the trainer is running and read your GPU's VRAM (it won't ask you).
-2. Propose a **trigger word** (e.g. `m4r1n`) — a rare token that will summon your
+2. Propose a **trigger word** (e.g. `mych4r`) — a rare token that will summon your
    character at generation time. You can swap it on the confirm card.
 3. Organize loose images into the `<repeats>_<concept>` folder the trainer expects.
 4. Auto-caption untagged images with the built-in WD14 tagger.
@@ -138,7 +138,7 @@ If you are an LLM agent executing these skills, these rules are **non-negotiable
 ```
 0  GET /api/version            → trainer alive?  GET /api/graphic_cards → VRAM
 1  inputs: image folder (required) · goal: character|style (ask only if unsaid)
-   derive: trigger (from concept name; leetify common words: marin → m4r1n)
+   derive: trigger (from concept name; leetify common words: mychar → mych4r)
            output_name = <concept>-anima-v1
 2  prepare data (each: dry-run → confirm once → --apply):
      loose images?    fix_dataset.py organize <dir> --repeats R --concept <name>
@@ -196,22 +196,22 @@ Works without any agent. `<PY>` = any Python 3.10+ with Pillow
 
 ```powershell
 # Full audit → PASS/WARN/FAIL + prioritized fixes (read-only)
-& <PY> dataset-doctor\scripts\doctor.py "D:\data\marin" --trigger m4r1n --epochs 10 --report
+& <PY> dataset-doctor\scripts\doctor.py "D:\data\mychar" --trigger mych4r --epochs 10 --report
 
 # Machine-readable variant (exit code 2 on FAIL — usable as a CI/hook gate)
-& <PY> dataset-doctor\scripts\doctor.py "D:\data\marin" --trigger m4r1n --json
+& <PY> dataset-doctor\scripts\doctor.py "D:\data\mychar" --trigger mych4r --json
 
 # Image-only / caption-only scans
-& <PY> dataset-doctor\scripts\scan_dataset.py "D:\data\marin"
-& <PY> dataset-doctor\scripts\check_captions.py "D:\data\marin" --trigger m4r1n
+& <PY> dataset-doctor\scripts\scan_dataset.py "D:\data\mychar"
+& <PY> dataset-doctor\scripts\check_captions.py "D:\data\mychar" --trigger mych4r
 
 # Fixes — ALWAYS dry-run first, then add --apply
-& <PY> dataset-doctor\scripts\fix_dataset.py organize "D:\data\marin" --repeats 5 --concept m4r1n
-& <PY> dataset-doctor\scripts\fix_dataset.py dedupe "D:\data\marin" --near
-& <PY> dataset-doctor\scripts\fix_dataset.py to-rgb "D:\data\marin"
-& <PY> dataset-doctor\scripts\fix_dataset.py add-trigger "D:\data\marin" --trigger m4r1n
-& <PY> dataset-doctor\scripts\fix_dataset.py strip-tags "D:\data\marin" --tags "watermark"
-& <PY> dataset-doctor\scripts\fix_dataset.py quarantine-corrupt "D:\data\marin" --apply
+& <PY> dataset-doctor\scripts\fix_dataset.py organize "D:\data\mychar" --repeats 5 --concept mych4r
+& <PY> dataset-doctor\scripts\fix_dataset.py dedupe "D:\data\mychar" --near
+& <PY> dataset-doctor\scripts\fix_dataset.py to-rgb "D:\data\mychar"
+& <PY> dataset-doctor\scripts\fix_dataset.py add-trigger "D:\data\mychar" --trigger mych4r
+& <PY> dataset-doctor\scripts\fix_dataset.py strip-tags "D:\data\mychar" --tags "watermark"
+& <PY> dataset-doctor\scripts\fix_dataset.py quarantine-corrupt "D:\data\mychar" --apply
 ```
 
 ## 5. Using outside Claude Code
@@ -269,12 +269,12 @@ Two rules apply everywhere:
 
 一个图片文件夹。直接说:
 
-> **「用 `D:/data/marin` 练一个角色 LoRA。」**
+> **「用 `D:/data/mychar` 练一个角色 LoRA。」**
 
 agent 会按顺序做下面的事——**动你文件之前一定先问你**:
 
 1. 确认训练器在跑、自动读显卡显存(不会问你显存多大)。
-2. 提议一个**触发词**(如 `m4r1n`)——生成时用来召唤角色的稀有 token,确认卡上可改。
+2. 提议一个**触发词**(如 `mych4r`)——生成时用来召唤角色的稀有 token,确认卡上可改。
 3. 把散图整理成训练器要求的 `<重复次数>_<概念名>` 文件夹结构。
 4. 没打标的图用内置 WD14 自动打标。
 5. 跑 **dataset-doctor** 体检并修复发现的问题(重复图、坏图、标注问题)——每个修复
@@ -364,7 +364,7 @@ TensorBoard 在 `:6006`,监控面板在 `:6008`。
 ```
 0  GET /api/version            → 训练器活着?  GET /api/graphic_cards → 显存
 1  输入:图片文件夹(必需) · 目标:角色|画风(用户没说才问)
-   推导:触发词(从概念名生成,常见词做变体:marin → m4r1n)
+   推导:触发词(从概念名生成,常见词做变体:mychar → mych4r)
          output_name = <概念名>-anima-v1
 2  准备数据(每步:dry-run → 确认一次 → --apply):
      散图?       fix_dataset.py organize <dir> --repeats R --concept <名>
@@ -422,22 +422,22 @@ TensorBoard 在 `:6006`,监控面板在 `:6008`。
 
 ```powershell
 # 完整体检 → PASS/WARN/FAIL + 按优先级的修复建议(只读)
-& <PY> dataset-doctor\scripts\doctor.py "D:\data\marin" --trigger m4r1n --epochs 10 --report
+& <PY> dataset-doctor\scripts\doctor.py "D:\data\mychar" --trigger mych4r --epochs 10 --report
 
 # 机器可读(FAIL 时退出码 2——可当 CI/hook 闸门用)
-& <PY> dataset-doctor\scripts\doctor.py "D:\data\marin" --trigger m4r1n --json
+& <PY> dataset-doctor\scripts\doctor.py "D:\data\mychar" --trigger mych4r --json
 
 # 只扫图像 / 只查标注
-& <PY> dataset-doctor\scripts\scan_dataset.py "D:\data\marin"
-& <PY> dataset-doctor\scripts\check_captions.py "D:\data\marin" --trigger m4r1n
+& <PY> dataset-doctor\scripts\scan_dataset.py "D:\data\mychar"
+& <PY> dataset-doctor\scripts\check_captions.py "D:\data\mychar" --trigger mych4r
 
 # 修复 — 永远先 dry-run,看完计划再加 --apply
-& <PY> dataset-doctor\scripts\fix_dataset.py organize "D:\data\marin" --repeats 5 --concept m4r1n
-& <PY> dataset-doctor\scripts\fix_dataset.py dedupe "D:\data\marin" --near
-& <PY> dataset-doctor\scripts\fix_dataset.py to-rgb "D:\data\marin"
-& <PY> dataset-doctor\scripts\fix_dataset.py add-trigger "D:\data\marin" --trigger m4r1n
-& <PY> dataset-doctor\scripts\fix_dataset.py strip-tags "D:\data\marin" --tags "watermark"
-& <PY> dataset-doctor\scripts\fix_dataset.py quarantine-corrupt "D:\data\marin" --apply
+& <PY> dataset-doctor\scripts\fix_dataset.py organize "D:\data\mychar" --repeats 5 --concept mych4r
+& <PY> dataset-doctor\scripts\fix_dataset.py dedupe "D:\data\mychar" --near
+& <PY> dataset-doctor\scripts\fix_dataset.py to-rgb "D:\data\mychar"
+& <PY> dataset-doctor\scripts\fix_dataset.py add-trigger "D:\data\mychar" --trigger mych4r
+& <PY> dataset-doctor\scripts\fix_dataset.py strip-tags "D:\data\mychar" --tags "watermark"
+& <PY> dataset-doctor\scripts\fix_dataset.py quarantine-corrupt "D:\data\mychar" --apply
 ```
 
 ## 5. 在 Claude Code 之外使用

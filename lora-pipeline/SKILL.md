@@ -44,7 +44,7 @@ description: End-to-end LoRA factory — go from just a character/concept NAME t
 
 ```
 0  输入:角色/概念「名字」(必需)。目标:角色|画风(用户没说才问)。
-   推导:danbooru tag(默认 name_(series))、trigger(小写去空格,常见词做变体 marin→m4r1n)、
+   推导:danbooru tag(默认 name_(series))、trigger(小写去空格,常见词做变体 mychar→mych4r)、
         output_name = <concept>-anima-v1、work 目录。
 1  COLLECT  scripts/collect.py --tag "<danbooru tag>" --work <work> --limit 200 --apply
             → raw/ 有 ≥30 张再继续(太少就换 tag / 提高 limit)。见 collect-and-tag.md 的 2-tag 坑。

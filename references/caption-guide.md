@@ -138,7 +138,7 @@ their `character` field — but treat `.txt` as the source of truth.
 The single most important caption decision for a **character/concept LoRA**.
 
 - Pick a **short, rare, non-dictionary token** so it does not collide with the
-  base model's existing concepts (`zkz`, `m4r1n`, `ohwx_girl` — not `marin` or
+  base model's existing concepts (`zkz`, `mych4r`, `ohwx_girl` — not `mychar` or
   `girl`).
 - Put it **first** in every caption (the first comma-separated tag).
 - It must appear in **~100% of captions** — `dataset-doctor --trigger zkz` reports
@@ -189,7 +189,7 @@ order*. Emit the documented sections instead:
 {quality}, {safety}, {count}, {trigger}, {characters}, {series}, {@artists}, {general}. {NL}
 ```
 
-`masterpiece, best quality, safe, 1girl, m4r1n, silver hair, … . An anime girl stands …`
+`masterpiece, best quality, safe, 1girl, mych4r, silver hair, … . An anime girl stands …`
 
 Doing this requires knowing each tag's **category** (WD14 tags carry general vs
 character vs rating). The sd-image-sorter `template` export with `preset_id="anima"`

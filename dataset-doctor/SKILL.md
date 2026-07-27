@@ -106,14 +106,14 @@ description: Audit a LoRA training dataset and its captions before training on l
 
 ## 可验证案例
 
-用户：训练前帮我看看 `D:/data/marin`（trigger 是 `m4r1n`，打算 10 epoch）。
+用户：训练前帮我看看 `D:/data/mychar`（trigger 是 `mych4r`，打算 10 epoch）。
 
 ```powershell
 & "C:\SD-Trainer\python_embeded\python.exe" `
-  "<SKILL_DIR>/scripts/doctor.py" "D:/data/marin" --trigger m4r1n --epochs 10 --report
+  "<SKILL_DIR>/scripts/doctor.py" "D:/data/mychar" --trigger mych4r --epochs 10 --report
 ```
 
-读 `verdict`：若 WARN 且 `missing_captions`+`exact_duplicates`，则：① 提议用 WD14 给缺标的图打标（trigger 放 `additional_tags`）；② `fix_dataset.py dedupe "D:/data/marin"` dry-run 列出重复组 → 用户确认 → 加 `--apply`（被移除的进 `_quarantine/`）；③ 修完重跑体检；④ PASS 后把数据集 + 建议的 repeats/epochs 交给 `lora-trainer`。
+读 `verdict`：若 WARN 且 `missing_captions`+`exact_duplicates`，则：① 提议用 WD14 给缺标的图打标（trigger 放 `additional_tags`）；② `fix_dataset.py dedupe "D:/data/mychar"` dry-run 列出重复组 → 用户确认 → 加 `--apply`（被移除的进 `_quarantine/`）；③ 修完重跑体检；④ PASS 后把数据集 + 建议的 repeats/epochs 交给 `lora-trainer`。
 
 ## 执行交接
 

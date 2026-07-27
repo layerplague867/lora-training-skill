@@ -34,7 +34,7 @@ description: Train a LoRA / LoKr / T-LoRA on the lora-scripts-next (SD-Trainer) 
 
 **1. 收集最少输入。** 必需：图片文件夹路径。再确认一件事：练**角色/概念**还是**画风**（用户没说才问，这是唯一要问的问题）。其余自动推：
 
-- **trigger**（角色/概念才需要）：从概念/文件夹名生成候选——小写、去空格；若是常见词，做数字变体避免撞概念（`marin` → `m4r1n`）。写进确认卡让用户改。
+- **trigger**（角色/概念才需要）：从概念/文件夹名生成候选——小写、去空格；若是常见词，做数字变体避免撞概念（`mychar` → `mych4r`）。写进确认卡让用户改。
 - **output_name** = `<concept>-anima-v1`；版本号冲突就 +1。
 
 **2. 自动准备数据。** 每步先跑 dry-run 把计划摊给用户，**确认一次后**加 `--apply` 执行（fixer 不删文件，原件进 `_quarantine/`）：
@@ -120,13 +120,13 @@ total_steps     = steps_per_epoch × max_train_epochs   # 角色目标 ~1000–2
 
 ## 可验证案例（快速通道）
 
-用户：「用 `D:/data/marin` 这堆图练个角色 LoRA」（文件夹里是 30 张散图，没 caption）。
+用户：「用 `D:/data/mychar` 这堆图练个角色 LoRA」（文件夹里是 30 张散图，没 caption）。
 
 1. `/api/version` OK；`/api/graphic_cards` → 4070 12GB。
-2. 唯一一问：已说是角色 → 不再问。trigger 候选 `m4r1n`（marin 是常见词，做数字变体）。
-3. 准备数据：`fix_dataset.py organize "D:/data/marin" --repeats 5 --concept m4r1n`（dry-run 摊牌 → 确认 → `--apply`）→ WD14 打标（`additional_tags=m4r1n`）→ `doctor.py --trigger m4r1n --epochs 10` → PASS。
+2. 唯一一问：已说是角色 → 不再问。trigger 候选 `mych4r`（mychar 是常见词，做数字变体）。
+3. 准备数据：`fix_dataset.py organize "D:/data/mychar" --repeats 5 --concept mych4r`（dry-run 摊牌 → 确认 → `--apply`）→ WD14 打标（`additional_tags=mych4r`）→ `doctor.py --trigger mych4r --epochs 10` → PASS。
 4. 自动选参：30 张 → repeats=5、epochs=10 → 1500 步；12GB → preset 3。
-5. 确认卡 → 用户回「确认」→ `POST /api/run` → 监看 → 报告 `./output/m4r1n-anima-v1/*.safetensors`，并提示先试最后一个快照。
+5. 确认卡 → 用户回「确认」→ `POST /api/run` → 监看 → 报告 `./output/mych4r-anima-v1/*.safetensors`，并提示先试最后一个快照。
 
 ## 执行交接
 

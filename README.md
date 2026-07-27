@@ -12,8 +12,45 @@ workflow — **Anima-first**, with SD1.5 / SDXL / Flux support.
 Built for **Claude Code**, and works in any SKILL.md-compatible agent —
 **OpenCode, Codex CLI, OpenClaw** — see [Compatibility](#compatibility-claude-code-opencode-codex-openclaw).
 
-> 📖 New here? Read **[GUIDE.md](GUIDE.md)** — a hands-on guide for users *and* agents,
-> in English and 简体中文.
+> 📖 **New here? Start with [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)** — the full
+> process from empty folder to published LoRA, including what to check at each stage
+> and the captioning mistake that ruins most first attempts.
+> For command reference and the agent contract, see **[GUIDE.md](GUIDE.md)**
+> (English + 简体中文).
+
+---
+
+## The full process at a glance
+
+Three skills, three jobs. `lora-pipeline` runs all of them in order, or enter at any
+stage with what you already have.
+
+```
+        ┌──────────────┐   ┌───────────────┐   ┌──────────────┐
+        │  1. MAKE     │──▶│  2. VERIFY    │──▶│  3. TRAIN    │
+        │ lora-pipeline│   │dataset-doctor │   │ lora-trainer │
+        └──────────────┘   └───────────────┘   └──────────────┘
+         collect · curate    PASS/WARN/FAIL      confirm card
+         build · caption     + one-line fixes    → train → snapshots
+               │                    │                    │
+               │            ⛔ FAIL blocks here          ▼
+               │            (seconds, offline,     4. VALIDATE  fixed-seed
+               │             before the GPU)          gallery per checkpoint
+               │                                          │
+               └──────────── bring your own images ───▶    ▼
+                                                    5. PUBLISH  Civitai draft
+                                                       🛑 you click Publish
+```
+
+| Stage | Skill | The question it answers |
+|---|---|---|
+| **Make** | `lora-pipeline` | Where do images come from, and how are they captioned? |
+| **Verify** | `dataset-doctor` | Is this trainable, or will it waste 40 minutes of GPU? |
+| **Train** | `lora-trainer` | What parameters — and did it actually work? |
+
+The point of the middle stage: dataset problems are cheap to find and expensive to
+discover after training. The doctor is offline, takes seconds, and exits non-zero on
+FAIL so you can gate on it.
 
 ---
 
@@ -34,15 +71,15 @@ plain-language confirmation card before training starts.
 ## What it feels like
 
 ```text
-You:  Train a character LoRA from D:/data/marin.
+You:  Train a character LoRA from D:/data/mychar.
 
-Agent: (detects your GPU · proposes trigger "m4r1n" · organizes the folder into
+Agent: (detects your GPU · proposes trigger "mych4r" · organizes the folder into
         kohya <repeats>_<concept> form · auto-tags with WD14 · runs the doctor ·
         fixes findings with your OK · picks repeats/epochs for ~1500 steps)
 
-        📋 Confirm card — character LoRA "m4r1n"
+        📋 Confirm card — character LoRA "mych4r"
         30 images × 5 repeats × 10 epochs = 1500 steps · RTX 4070 12GB → low-VRAM preset
-        Output: ./output/m4r1n-anima-v1/   Reply "confirm" to start.
+        Output: ./output/mych4r-anima-v1/   Reply "confirm" to start.
 
 You:  confirm.
 
@@ -259,11 +296,11 @@ Full rules, examples, and the line-by-line evidence:
 ```powershell
 # audit (read-only)
 & "C:\SD-Trainer\python_embeded\python.exe" `
-  ".\dataset-doctor\scripts\doctor.py" "D:\data\marin" --trigger m4r1n --epochs 10 --report
+  ".\dataset-doctor\scripts\doctor.py" "D:\data\mychar" --trigger mych4r --epochs 10 --report
 
 # fix — dry-run by default; add --apply after reviewing the plan
 & "C:\SD-Trainer\python_embeded\python.exe" `
-  ".\dataset-doctor\scripts\fix_dataset.py" dedupe "D:\data\marin"
+  ".\dataset-doctor\scripts\fix_dataset.py" dedupe "D:\data\mychar"
 ```
 
 Full command reference: [GUIDE.md](GUIDE.md).
