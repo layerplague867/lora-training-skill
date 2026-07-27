@@ -1,0 +1,135 @@
+---
+name: lora-trainer
+description: Train a LoRA / LoKr / T-LoRA on the lora-scripts-next (SD-Trainer) trainer, Anima-first — even from just a bare folder of images. Use when the user wants to train / 训练 / 炼 a LoRA, start a training run, pick training parameters, choose repeats/epochs, or launch training for a character / style / concept on Anima (or SD1.5 / SDXL / Flux). Quick path needs only an image folder: it auto-organizes the dataset, auto-tags with WD14, gates on a dataset-doctor check with one-command fixes, auto-picks repeats/epochs/preset from image count and detected VRAM, and — only after the user confirms one plain-language card — launches via the mikazuki HTTP API and monitors the live training log.
+---
+
+# lora-trainer — LoRA 训练编排入口
+
+把「训练一个 LoRA」的意图，变成一次受控的训练：准备数据 → 体检 → 组装配置 → **用户确认** → 通过 trainer API 开训 → 监看 log。本 skill 默认 **Anima 优先**，也支持 SD1.5 / SDXL / Flux。
+
+> 训练耗时、占显存、难回退。**在 `POST /api/run` 之前必须把组装好的配置摊给用户、明确确认**；未确认不开训。
+
+底层 = `lora-scripts-next`（SD-Trainer）的 `mikazuki` FastAPI（`http://127.0.0.1:28000`，路由前缀 `/api`）。完整契约见 `../references/trainer-api.md`。
+
+## 适用范围（用户用的不是 SD-Trainer 时怎么办）
+
+本 skill 的**开训与打标只针对 SD-Trainer** 的 mikazuki API——`trainer-api.md` 的契约只对它成立。**绝不要**把这套 `/api/run` body 发给别的训练器（kohya_ss GUI、OneTrainer、ai-toolkit…），它们的 API 完全不同。用户在用别的训练器时，按可移植性分层处理：
+
+1. **体检照做**：`dataset-doctor` 与 `fix_dataset.py` 是训练器无关的（标准 kohya `<repeats>_<concept>` + sidecar caption 约定），完整可用，全程离线。
+2. **参数知识可借用**：`anima-params.md` / `presets.md` 的键就是 kohya sd-scripts 词汇（`network_dim`、`unet_lr`、repeats/epochs 步数预算）。可以据此给参数建议，或替用户生成一份 kohya 风格 TOML / 命令行，让他们在自己的训练器里手动跑。
+3. **不自动开训**：明确告知「自动开训只支持 SD-Trainer」，给两条路——装 SD-Trainer（见 README），或拿第 2 点生成的配置自己跑。
+
+`/api/version` 连不上 ≠ 中止一切：数据整理、体检、修复全部离线可做；只有 WD14 打标和开训需要 trainer 在线。
+
+## 两条路径
+
+- **快速通道（默认）**：用户只给**一个图片文件夹**。结构整理、打标、体检、修复、选参全部自动；用户只看一张「确认卡」。一般用户走这条。
+- **进阶通道**：用户自己点名 preset / dim / LR / 优化器等参数时走「进阶流程」，参数知识见 `../references/`。
+
+两条路都**必须**过 `dataset-doctor` 闸门，**必须**确认后才开训。
+
+## 快速通道（只需要一个图片文件夹）
+
+**0. 连 trainer、读显卡。** `GET /api/version` 确认在跑（连不上 → 让用户启动 `run_gui.bat`，可建议在输入框输入 `! run_gui.bat` 直接在会话里运行）。再 `GET /api/graphic_cards` 自动读显存——**不要问用户显存多大**。
+
+**1. 收集最少输入。** 必需：图片文件夹路径。再确认一件事：练**角色/概念**还是**画风**（用户没说才问，这是唯一要问的问题）。其余自动推：
+
+- **trigger**（角色/概念才需要）：从概念/文件夹名生成候选——小写、去空格；若是常见词，做数字变体避免撞概念（`marin` → `m4r1n`）。写进确认卡让用户改。
+- **output_name** = `<concept>-anima-v1`；版本号冲突就 +1。
+
+**2. 自动准备数据。** 每步先跑 dry-run 把计划摊给用户，**确认一次后**加 `--apply` 执行（fixer 不删文件，原件进 `_quarantine/`）：
+
+- 散图、没有 `<repeats>_<concept>` 结构 → `fix_dataset.py organize --repeats <R> --concept <name>`（R 见第 3 步）。
+- 没 caption → WD14 打标：`POST /api/interrogate`（`additional_tags=<TRIGGER>`），轮询 `GET /api/tagger/status` 至完成。
+- 跑 `doctor.py --trigger <T> --epochs <N>` 体检：FAIL/WARN 的每个 issue code 都有对应的一行修复命令（见 `../dataset-doctor/SKILL.md` 修复手册）。把要做的修复**一次列全、统一确认**，再逐条执行，修完重检到 PASS。
+
+**3. 自动选参。** 不要让用户做数学：
+
+- `repeats = clamp(round(150 / 图片数), 1, 10)`，`epochs = 10`（画风 12）→ 总步数 ≈ 1500，落在 1000–2500 区间即可。
+- preset（`../references/presets.md`）：显存 ≥16GB → preset 1（角色）/ 2（画风）；≤12GB → preset 3（LoKr + `blocks_to_swap=16`；8GB 改 24）。
+
+**4. 确认卡（强制）。** 用人话摊牌，等用户回「确认」：
+
+```
+📋 训练确认卡
+- 练什么：角色 LoRA「zkz」 · trigger: zkz（要换就说）
+- 数据：32 张图 × 5 重复 × 10 轮 = 1600 步
+- 显卡：RTX 4070 12GB → 用省显存配置（LoKr）
+- 输出：./output/zkz-anima-v1/，每 2 轮存一个文件
+- 底模：Anima（dim16/alpha16 · bf16 · unet_lr 5e-5）
+回复「确认」开训；想改哪一项直接说。
+```
+
+**5. 开训 + 监看。** 同进阶流程第 5–6 步。
+
+## 进阶流程
+
+**1. 收集输入。** `train_data_dir`（`<repeats>_<concept>` 的父目录）、trigger word、`output_name`、模型类型、目标（角色/画风/概念）。缺就问。
+
+**2. 闸门：先体检。** 调 `dataset-doctor` 跑 `doctor.py --trigger <TRIGGER> --epochs <N> --batch-size <B>`：FAIL → **停**，先修（用 `fix_dataset.py` 对应命令）再重检；WARN → 摊给用户确认是否继续；PASS → 继续。
+
+**3. 组装 config。** 从 `../references/presets.md` 选模板，填 `<TRAIN_DATA_DIR>` / `<OUTPUT_NAME>`，用 doctor 的 `effective_images` 估算总步数：
+
+```
+steps_per_epoch = ceil(effective_images / train_batch_size)
+total_steps     = steps_per_epoch × max_train_epochs   # 角色目标 ~1000–2500
+```
+
+偏离区间就调 repeats/epochs。Anima 关键默认（`anima-params.md`）：`unet_lr=5e-5`、`mixed_precision=bf16`、`gradient_checkpointing=true`、`attn_mode` 留空自动、Windows `max_data_loader_n_workers=0`。caption 一律用**单行 `.txt`**（`trigger, tags. 自然语言`，见 `../references/caption-guide.md`）；`prefer_json_caption` 是 UI 透传项、v2.7.0 训练端未发现实现，别指望 `.json` 被读取。
+
+**4. 摊牌 + 确认（强制）。** 列出关键项（模型类型、底模、`train_data_dir`、`network_dim/alpha`、`unet_lr`、epochs、`total_steps`、`output_dir`、显存预估），**明确征得同意**再开训。
+
+**5. 开训。** `POST /api/run`，body = 组装好的 flat config（JSON）。用 PowerShell `Invoke-RestMethod`（示例见 `trainer-api.md`）。返回 `status: fail` → 把 `message` 给用户并修正；`success` → 记下 `data.task_id` 与 `data.train_log_stream_url`。
+
+**6. 监看。** 轮询 `GET /api/train/log/tail/{task_id}?limit=240`（或让用户开 `data.train_log_url` / 6008 监控面板）。盯：`loss=nan`（多见于 fp16 → 改 bf16 或换优化器）、OOM（加 `gradient_checkpointing` / `blocks_to_swap` / 降分辨率）、报错退出。
+
+## 训练完成后（别漏这步）
+
+1. 产物在 `output_dir` 下：按 `save_every_n_epochs` 会有多个 epoch 快照（`<name>-000002.safetensors` …）+ 最终档。
+2. **怎么挑**：先试**最后一个**；如果过拟合（脸僵、姿势单一、出图全像训练图）→ 往前换更早的快照逐个试。
+3. 复制到生成端（ComfyUI: `models/loras/`），用 **trigger word** 出几张图验证；角色一致性不够 → 提高 LoRA 权重或加练 epochs，画风污染太重 → 降权重或用更早快照。
+
+## 模型与适配器分支
+
+**模型类型**（决定 `model_train_type` 与底模，见 `trainer-api.md` 映射表）：默认 → **Anima**（`anima-lora`，`networks.lora_anima`）；用户点名 SDXL / SD1.5 / Flux → `sdxl-lora` / `sd-lora` / `flux-lora`；全量微调 → `anima-finetune` / `sdxl-finetune`（Anima ~24GB，先提醒）。
+
+**适配器** `lora_type`（见 `anima-params.md`）：默认 `lora`；显存紧 / 小文件强风格 → `lokr`；timestep-aware → `tlora`（`network_dim=32`）。
+
+## 读取导航
+
+| 需要处理的事 | 读取 / 执行 |
+| --- | --- |
+| 开训前体检数据集 / caption | `../dataset-doctor/scripts/doctor.py` |
+| 一行命令修数据集问题（dry-run → --apply） | `../dataset-doctor/scripts/fix_dataset.py` |
+| API 端点、`/api/run` body、SSE、打标、显卡查询 | `../references/trainer-api.md` |
+| 参数含义、默认值、VRAM、步数预算 | `../references/anima-params.md` |
+| 起手配置模板（角色/画风/低显存） | `../references/presets.md` |
+| caption 写法、trigger 取法 | `../references/caption-guide.md` |
+
+## 自检
+
+1. 目标训练器是 SD-Trainer；不是的话**没有**把 `/api/run` 契约发给别的训练器，而是走「适用范围」的分层处理。
+2. trainer 已在 28000 响应（`/api/version`）；显存来自 `/api/graphic_cards`，没问用户。
+3. 已跑 `dataset-doctor`；FAIL 没放行，WARN 已让用户确认。
+4. 所有 `fix_dataset.py` 修复都先 dry-run、经用户确认才 `--apply`；没有手写删除/改写命令。
+5. `model_train_type` 与底模 / `network_module` 一致（Anima=`networks.lora_anima`，LoKr=`lycoris.kohya`，T-LoRA=`networks.tlora_anima`）。
+6. 角色训练 trigger 一致率达标；`keep_tokens≥1` 保护首位 trigger（若开 shuffle）；`cache_text_encoder_outputs=true` 时 `shuffle_caption=false`。
+7. 估算了 `total_steps` 且在 ~1000–2500（快速通道用自动公式）。
+8. **已出确认卡并取得开训确认**；未确认不 POST。
+9. Anima 用 `bf16`；`Automagic`/`CAME` 会被服务端强制 bf16。
+
+## 可验证案例（快速通道）
+
+用户：「用 `D:/data/marin` 这堆图练个角色 LoRA」（文件夹里是 30 张散图，没 caption）。
+
+1. `/api/version` OK；`/api/graphic_cards` → 4070 12GB。
+2. 唯一一问：已说是角色 → 不再问。trigger 候选 `m4r1n`（marin 是常见词，做数字变体）。
+3. 准备数据：`fix_dataset.py organize "D:/data/marin" --repeats 5 --concept m4r1n`（dry-run 摊牌 → 确认 → `--apply`）→ WD14 打标（`additional_tags=m4r1n`）→ `doctor.py --trigger m4r1n --epochs 10` → PASS。
+4. 自动选参：30 张 → repeats=5、epochs=10 → 1500 步；12GB → preset 3。
+5. 确认卡 → 用户回「确认」→ `POST /api/run` → 监看 → 报告 `./output/m4r1n-anima-v1/*.safetensors`，并提示先试最后一个快照。
+
+## 执行交接
+
+- 数据集 / caption 体检与修复 → `dataset-doctor`（体检 `doctor.py`，修复 `fix_dataset.py`）。
+- 端点 / 请求体 / SSE / 打标细节 → `../references/trainer-api.md`；参数 → `../references/anima-params.md`；模板 → `../references/presets.md`；caption → `../references/caption-guide.md`。
+- 本 skill 负责准备、组装与（确认后）开训 + 监看；不绕过体检闸门，不在未确认时启动训练或改动用户文件。

@@ -1,0 +1,10 @@
+# Example Krea 2 validation prompts.
+# Fixed seeds (--d N) so the same shot can be compared across checkpoints —
+# that comparison is the point: the last epoch is often not the best one.
+# Replace "mychar" with your trigger and the traits with your character's.
+# Mix tag-style and natural-language prompts: Krea 2 is NL-native, but a LoRA
+# trained on tag captions answers both, and you want to confirm that it does.
+masterpiece, best quality, 1girl, mychar, solo, long hair, blue eyes, looking at viewer, upper body --d 42
+masterpiece, best quality, 1girl, mychar, solo, full body, standing, white background --d 43
+masterpiece, best quality, 1girl, mychar, solo, sitting, couch, indoors, anime coloring --d 44
+An anime screenshot of mychar, a girl with long hair and blue eyes, sitting by a window in a dim room at dusk --d 45

@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+# Windows batch files must keep CRLF or cmd.exe can mis-parse them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.jpg binary
+*.safetensors binary

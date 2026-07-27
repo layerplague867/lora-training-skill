@@ -1,0 +1,181 @@
+# Trainer API contract — lora-scripts-next / SD-Trainer (mikazuki)
+
+Authoritative notes for driving the **lora-scripts-next** trainer (a.k.a.
+*Next Trainer* / SD-Trainer, the `mikazuki` FastAPI backend) programmatically.
+Verified against SD-Trainer **v2.7.0**.
+
+> The trainer must be running. Launch it with `run_gui.bat` (portable) or
+> `python gui.py`. The backend then serves on **`http://127.0.0.1:28000`** and
+> all JSON routes live under the **`/api`** prefix
+> (`mikazuki/app/application.py`: `app.include_router(api_router, prefix="/api")`).
+
+Default ports (see `gui.py`):
+
+| Service | Port | Purpose |
+|---|---|---|
+| GUI / API | `28000` | WebUI + `/api/*` |
+| TensorBoard | `6006` | loss/LR curves |
+| Train Monitor | `6008` | GPU stats, samples, logs dashboard |
+
+---
+
+## 1. Start a training run — `POST /api/run`
+
+Body = a **flat JSON config object** (one big dict of sd-scripts/GUI keys).
+The server (`mikazuki/app/api.py::create_toml_file`) will:
+
+1. fix types + merge `*_custom` arg tables,
+2. pop `model_train_type` (default `sd-lora`) and `gpu_ids`,
+3. apply model-specific defaults (Anima: `unet_lr` 5e-5, bf16, `attn_mode` auto, …),
+4. validate `train_data_dir` exists & has images, and validate the model path,
+5. write `config/autosave/<timestamp>.toml` (+ `-dataset.toml`, `-promopt.txt`),
+6. launch `accelerate launch <trainer> --config_file <toml>` as a background task.
+
+`model_train_type` → trainer script (`trainer_mapping`):
+
+| `model_train_type` | script | notes |
+|---|---|---|
+| `anima-lora` / `sd3-lora` | `scripts/dev/anima_train_network.py` | **Anima LoRA (this suite's focus)** |
+| `anima-finetune` | `scripts/dev/anima_train.py` | full DiT finetune (~24 GB) |
+| `sd-lora` | `scripts/stable/train_network.py` | SD1.5 |
+| `sdxl-lora` | `scripts/stable/sdxl_train_network.py` | SDXL |
+| `flux-lora` | `scripts/dev/flux_train_network.py` | Flux |
+| `sdxl-finetune` / `sd-dreambooth` | `sdxl_train.py` / `train_db.py` | finetune/dreambooth |
+| `anima-lora-fast` | (plugin runtime) | optional Fast plugin; gated by install state |
+
+Minimum useful Anima LoRA body (full key reference: `anima-params.md`):
+
+```jsonc
+{
+  "model_train_type": "anima-lora",
+  "lora_type": "lora",
+  "pretrained_model_name_or_path": "./sd-models/anima/anima-base-v1.0.safetensors",
+  "vae": "./sd-models/anima/qwen_image_vae.safetensors",
+  "qwen3": "./sd-models/anima/qwen_3_06b_base.safetensors",
+  "train_data_dir": "./train/myproject",          // parent of <repeats>_<concept>
+  "resolution": "1024,1024",
+  "output_name": "my-anima-lora",
+  "output_dir": "./output/my-anima-lora",
+  "max_train_epochs": 10,
+  "save_every_n_epochs": 2,
+  "network_dim": 16,
+  "network_alpha": 16,
+  "unet_lr": 5e-5,
+  "optimizer_type": "AdamW8bit",
+  "mixed_precision": "bf16",
+  "gradient_checkpointing": true,
+  "enable_preview": false
+  // gpu_ids: ["0"]   // optional; sets CUDA_VISIBLE_DEVICES
+}
+```
+
+**Response** (`mikazuki/process.py::run_train`) — note the ready-made stream URL:
+
+```jsonc
+{
+  "status": "success",
+  "message": "Training started / 训练开始 ID: <task_id>",
+  "data": {
+    "task_id": "<uuid>",
+    "train_log_path": "/train-log",
+    "train_log_stream": "/api/train/log/stream/<task_id>",
+    "train_log_url": "http://127.0.0.1:28000/train-log?task_id=<task_id>",
+    "train_log_stream_url": "http://127.0.0.1:28000/api/train/log/stream/<task_id>"
+  }
+}
+```
+
+Failure path returns `{"status": "fail", "message": "..."}` (e.g. bad data dir,
+missing model). Always check `status`.
+
+PowerShell example:
+
+```powershell
+$body = Get-Content config.json -Raw
+$r = Invoke-RestMethod -Uri http://127.0.0.1:28000/api/run -Method Post `
+       -ContentType 'application/json' -Body $body
+$r.data.task_id
+```
+
+---
+
+## 2. Live training logs (SSE) — `GET /api/train/log/stream/{task_id}`
+
+Server-Sent Events; one JSON per event: `{"text": "..."}` then `{"done": true}`.
+Use the `train_log_stream_url` from the `/api/run` response directly.
+
+Lightweight polling alternatives:
+
+- `GET /api/train/log/tail/{task_id}?limit=240` → recent lines (`data.lines`, `data.done`).
+- `GET /api/train/tasks` and `GET /api/tasks` → running/known tasks (`tm.dump()`).
+- `GET /api/tasks/terminate/{task_id}` → stop a run.
+
+> `task_id` is only valid for the **current** server session.
+
+---
+
+## 3. Auto-caption (WD14 tagger) — `POST /api/interrogate`
+
+Generates sidecar `.txt` captions for every image in a folder. Body =
+`TaggerInterrogateRequest` (`mikazuki/app/models.py`):
+
+| field | default | meaning |
+|---|---|---|
+| `path` | *(required)* | folder of images to tag |
+| `interrogator_model` | `wd14-convnextv2-v2` | must be in `available_interrogators` |
+| `threshold` | `0.35` | general-tag confidence cutoff |
+| `character_threshold` | `0.6` | character-tag confidence cutoff |
+| `additional_tags` | `""` | comma list prepended to every caption (good for a **trigger word**) |
+| `exclude_tags` | `""` | comma list removed from every caption |
+| `add_rating_tag` | `false` | append safe/sensitive/nsfw rating tag |
+| `replace_underscore` | `true` | `long_hair` → `long hair` |
+| `batch_input_recursive` | `false` | recurse into subfolders |
+| `batch_output_action_on_conflict` | `ignore` | `ignore` / `copy` / `append` / `prepend` for existing captions |
+
+Returns immediately (`"打标任务已提交"`); it runs as a background task. Poll:
+
+- `GET /api/tagger/status` → full progress snapshot.
+- `GET /api/tagger/download-status` → model download phase.
+- `POST /api/tagger/cancel`, `POST /api/tagger/reset`.
+- `POST /api/tagger/prefetch` (`{interrogator_model}`) → pre-download a model.
+
+`409`-style busy guard: only one tag/download job at a time
+(`tagger_progress.is_busy()`).
+
+PowerShell example (tag a folder, force the trigger word first):
+
+```powershell
+$body = @{ path = "D:/data/myproject/5_zkz"; additional_tags = "zkz"; threshold = 0.35 } | ConvertTo-Json
+Invoke-RestMethod -Uri http://127.0.0.1:28000/api/interrogate -Method Post `
+  -ContentType 'application/json' -Body $body
+```
+
+> WD14 models live under `tagger-models/wd14/<model-key>/` (default
+> `wd14-convnextv2-v2`, ~400 MB, bundled in the portable build).
+
+---
+
+## 4. Discovery / housekeeping endpoints
+
+| Method · Route | Purpose |
+|---|---|
+| `GET /api/version` | trainer version |
+| `GET /api/graphic_cards` | available GPUs (`data.cards`); `status:"pending"` until probed |
+| `GET /api/presets` | preset templates (`config/presets/*.toml`) |
+| `GET /api/schemas/all` | full parameter schema (per model type) |
+| `GET /api/config/saved_params` | last-used params |
+| `GET /api/get_files?pick_type=model-file\|model-saved-file\|train-dir` | list models / outputs / train dirs |
+
+---
+
+## 5. No-GUI / CLI path (advanced)
+
+Standard Anima Kohya training is **meant to go through the WebUI/API**. For
+headless flows the trainer also ships:
+
+- `scripts/cli/train_by_toml.ps1` / `.sh` — legacy SD1.5/SDXL/Flux via a TOML.
+- `scripts/cli/train_anima_fast_by_toml.bat` / `.sh` — the optional Anima **Fast** plugin.
+
+These call `accelerate launch <trainer> --config_file <toml>` themselves. Prefer
+`POST /api/run` when the GUI is up — it validates inputs and gives you a
+`task_id` + live log stream for free.

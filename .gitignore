@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local doctor output (if written next to a dataset)
+*-doctor.json
+
+# Per-project training artifacts (scripts, configs, model outputs, upload packages).
+# Organized on disk but NOT tracked — these contain multi-GB safetensors + datasets.
+lora-datasets/
+
+# Run logs (local only)
+logs/
+
+# Never commit browser sessions or screenshots from the uploader
+.profile/
+runs/
+
+# Machine-local config: real model/trainer paths live here, never in git.
+env.bat
+.env
+*.local.bat
+*.local.toml
+
+# Local venvs
+.venv/
+venv/
