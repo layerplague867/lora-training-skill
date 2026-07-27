@@ -1,11 +1,11 @@
 ---
 name: dataset-doctor
-description: Audit a LoRA training dataset and its captions before training on lora-scripts-next / SD-Trainer (Anima-first), and fix the findings with safe one-line commands. Use when the user wants to check / validate / inspect / fix / clean / 体检 / 修 a dataset, captions, or tags for LoRA training — image count, repeats and the training step budget, resolution and aspect-ratio buckets, duplicate or corrupt or non-RGB images, missing or empty or inconsistent captions, trigger-word consistency, and tag-frequency distribution. Runs read-only scan scripts, returns a PASS / WARN / FAIL readiness report with prioritized fixes, and applies confirmed fixes via fix_dataset.py (dry-run by default; originals quarantined, never deleted), including WD14 re-tagging via the trainer API.
+description: "Audit and repair a kohya-style LoRA dataset before training. Use when the user asks to check, validate, inspect, fix, clean, 体检, or 修 a dataset, captions, or tags. Inspect image count, repeats and step budget, resolution and aspect buckets, duplicates, corrupt or non-RGB images, missing or empty captions, trigger consistency, and tag-frequency hygiene. Return a structural PASS, WARN, or FAIL report and apply only confirmed fix_dataset.py actions, dry-run first with displaced originals quarantined."
 ---
 
 # dataset-doctor — LoRA 数据集 / caption 体检 + 修复
 
-在训练前对 LoRA 数据集与标注做质量体检，给出 **PASS / WARN / FAIL** 结论和按优先级排序的修复建议；确认后用 `fix_dataset.py` 一行命令执行修复。**体检只读**；修复**默认 dry-run**，加 `--apply` 才动文件，且**从不删除**——被移除的文件全部进数据集内的 `_quarantine/`（体检与训练都会忽略它），随时可还原。任何 `--apply` 都必须先得到用户确认。
+在训练前对 LoRA 数据集与标注做**结构/卫生预检**，给出 **PASS / WARN / FAIL** 结论和按优先级排序的修复建议；PASS 不代表图像与 caption 的语义已经人工验证。确认后用 `fix_dataset.py` 一行命令执行修复。**体检只读**；修复**默认 dry-run**，加 `--apply` 才动文件，且**从不删除**——被移除的文件全部进数据集内的 `_quarantine/`（体检与训练都会忽略它），随时可还原。任何 `--apply` 都必须先得到用户确认。
 
 底层针对 `lora-scripts-next`（SD-Trainer）的数据集约定：`train_data_dir` 下放 `<repeats>_<concept>` 子文件夹（如 `7_zkz` = 重复 7 次、概念 `zkz`），caption 是与图同名的 sidecar `.txt`——**单行**、逗号分隔、可在末尾用「`. `」接自然语言（已验证格式见 `../references/caption-guide.md`）。Anima `.json` caption 仅是 UI 宣称的可选项，训练端 v2.7.0 未发现读取实现，不要依赖。
 
@@ -17,14 +17,14 @@ description: Audit a LoRA training dataset and its captions before training on l
 
 体检与修复是**训练器无关**的：检查对象是标准 kohya 数据集约定（`<repeats>_<concept>` 文件夹 + 同名 sidecar caption），sd-scripts / kohya_ss / OneTrainer 等训练器通用；脚本全程离线、不碰 GPU、不需要 trainer 在线。用户打算在**任何**训练器上练 LoRA，体检都照做。只有两处例外：
 
-- **WD14 打标**走 SD-Trainer 的 `POST /api/interrogate`——trainer 不在线/不存在时，改为建议用户用本地 tagger 打标，打完回来重检，不要因此跳过 caption 检查。
-- **Anima `.json` caption 校验**只对已经持有 `.json` 标注的数据集有意义，且 `.json` 是否真被训练端读取**未经验证**（v2.7.0 本地代码中无读取实现）——一律建议以 `.txt` 为准；用户练 SD1.5/SDXL/Flux 或用别的训练器时，`json_structure` 问题可降级为忽略。
+- **WD14 打标**：Anima 使用 `../lora-pipeline/scripts/tag_dataset.py`，与完整 pipeline 保持一致；SD1.5/SDXL/Flux 可走 SD-Trainer 的 `POST /api/interrogate`。
+- **Anima `.json` caption 校验**只对已经持有 `.json` 标注的数据集有意义，且 `.json` 是否真被训练端读取**未经验证**（v2.7.0 本地代码中无读取实现）——doctor 默认要求 `.txt`；仅在明确使用会读取 JSON 的其他训练器时传 `--prefer-json`。
 
 ## 触发与分支
 
 有「训练前检查数据集 / caption / tag 质量」意图时触发：体检、检查数据集、看看标注、tag 有没有问题、能不能开训、trigger 一致吗、有没有重复图、步数够不够。
 
-- 只是要**自动打标**（还没标注）→ 直接走打标（`POST /api/interrogate`，见 `../references/trainer-api.md`），打完再回来体检。
+- 只是要**自动打标**（还没标注）→ Anima 走 `tag_dataset.py`;其他底模走 `/api/interrogate`;打完再回来体检。
 - 要**开始训练 / 调参** → 交给 `lora-trainer`；它会在开训前调用本 skill 作为闸门。
 - 要查 caption 怎么写 / trigger 怎么取 → 读 `../references/caption-guide.md`。
 
@@ -85,11 +85,11 @@ description: Audit a LoRA training dataset and its captions before training on l
 | `exact_duplicates` | `fix_dataset.py dedupe <dir>`（保留分辨率最高的一张） |
 | `near_duplicates` | `fix_dataset.py dedupe <dir> --near` |
 | `non_rgb_mode` | `fix_dataset.py to-rgb <dir>`（原件备份进 `_quarantine/`） |
-| `trigger_inconsistent` | `fix_dataset.py add-trigger <dir> --trigger <T>`（.txt 提到首位；.json 写 `character`） |
-| `artifact_tags` / `duplicate_tags` | `fix_dataset.py strip-tags <dir>`（可加 `--tags "a,b"` 一并删指定 tag） |
+| `trigger_inconsistent` | `fix_dataset.py add-trigger <dir> --trigger <T>`（.txt 按 Anima 分段顺序插入；.json 写 `character`） |
+| `artifact_tags` / `duplicate_tags` | `fix_dataset.py strip-tags <dir>`（移除 watermark/signature 等来源噪声;准确的逐图 quality 标签不是 artifact） |
 | `multiline_caption` | 训练端只读 `.txt` 第一行，后续行**静默丢失**。手动把每个 caption 合并成单行：tag 在前、`. ` 接自然语言（格式见 `../references/caption-guide.md`） |
 | `ubiquitous_tags` | 先核对哪个是有意的 trigger，其余用 `strip-tags --tags "..."` 删 |
-| `missing_captions` / `empty_captions` | WD14 打标：`POST /api/interrogate`，`additional_tags=<TRIGGER>`，`batch_output_action_on_conflict="ignore"`（不覆盖已有） |
+| `missing_captions` / `empty_captions` | Anima：`tag_dataset.py --dataset-dir <concept-dir> ...`;其他底模：`POST /api/interrogate` + `additional_tags=<TRIGGER>` |
 | `below_target_resolution` / `tiny_images` | 换更高分辨率源；`bucket_no_upscale` 下小图细节受限（无自动修复） |
 | `mixed_repeats` | 核对各概念「有效图片数」比例是否符合预期（无需修复） |
 
@@ -99,7 +99,7 @@ description: Audit a LoRA training dataset and its captions before training on l
 
 1. 路径指向的是 `train_data_dir`（`<repeats>_<concept>` 的父目录），不是散图目录；散图会触发 `no_concept_folders`。
 2. 用了带 Pillow 的 Python；脚本能正常输出 JSON。
-3. 已知 trigger 时传了 `--trigger`，并核对 `trigger.presence_pct` / `first_position_pct`。
+3. 已知 trigger 时传了 `--trigger`，并核对 `trigger.presence_pct`；Anima trigger 按分段顺序出现，不强制首位。
 4. 解读了 `verdict` 并按 `recommendations` 顺序给建议。
 5. 任何 `fix_dataset.py --apply` / 打标操作**已先 dry-run 摊牌并取得用户确认**；从不手写删除命令，从不直接删文件（一律走 `_quarantine/`）。
 6. 修复后重跑体检确认。
@@ -113,7 +113,7 @@ description: Audit a LoRA training dataset and its captions before training on l
   "<SKILL_DIR>/scripts/doctor.py" "D:/data/mychar" --trigger mych4r --epochs 10 --report
 ```
 
-读 `verdict`：若 WARN 且 `missing_captions`+`exact_duplicates`，则：① 提议用 WD14 给缺标的图打标（trigger 放 `additional_tags`）；② `fix_dataset.py dedupe "D:/data/mychar"` dry-run 列出重复组 → 用户确认 → 加 `--apply`（被移除的进 `_quarantine/`）；③ 修完重跑体检；④ PASS 后把数据集 + 建议的 repeats/epochs 交给 `lora-trainer`。
+读 `verdict`：若 WARN 且 `missing_captions`+`exact_duplicates`，则：① Anima 用 `tag_dataset.py` 给缺标的图打标并生成语义审查；② `fix_dataset.py dedupe "D:/data/mychar"` dry-run 列出重复组 → 用户确认 → 加 `--apply`（被移除的进 `_quarantine/`）；③ 修完重跑体检；④ PASS 或用户明确接受剩余 WARN 后，把数据集 + 建议的 repeats/epochs 交给 `lora-trainer`。
 
 ## 执行交接
 

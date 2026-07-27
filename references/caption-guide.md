@@ -10,11 +10,11 @@ sd-scripts) — see [Evidence](#evidence) at the bottom.
 ## The verified format — one line, comma tags, period before natural language
 
 ```
-<trigger>, <tag>, <tag>, …, <tag>. <Natural-language sentences, normal prose punctuation.>
+<quality/meta/safety>, <count>, <trigger>, <tag>, …, <tag>. <Natural-language sentences.>
 ```
 
-- **trigger ↔ tags: comma.** The trigger is simply the *first element* of the
-  comma-separated tag list — no special separator, no `@` for characters.
+- **Trigger ↔ surrounding tags: comma.** Character triggers use no special
+  marker; place them in the character section after quality/meta/safety and count.
 - **tags ↔ natural language: period + space.** This is the transition Anima's
   own model card demonstrates verbatim:
 
@@ -40,7 +40,7 @@ sd-scripts) — see [Evidence](#evidence) at the bottom.
 Full example:
 
 ```
-zkz, 1girl, solo, long hair, brown hair, school uniform, classroom. An anime girl with long brown hair stands by the classroom window.
+safe, 1girl, zkz, solo, long hair, brown hair, school uniform, classroom. An anime girl with long brown hair stands by the classroom window.
 ```
 
 ### Official Anima tag order
@@ -55,24 +55,21 @@ tags).
 
 ### Official recommended quality tags (the `[quality/meta]` slot)
 
-Anima's card recommends leading with quality/meta tags. The standard, safe set:
+For the Anima base model, the current recommended generation prefix is:
 
 ```
-masterpiece, best quality, newest, highres
+masterpiece, best quality, score_7, safe
 ```
 
-(sometimes `absurdres`, `very aesthetic`; year/meta like `newest` steers toward
-recent art). Two rules:
+For Anima-Aesthetic, omit `score_*`; quality tags are optional. Two rules:
 
 - **At generation time (prompts + sample gallery):** always lead with this prefix.
   `lora-pipeline`'s `validate.py` and the generated model card both use exactly
-  `masterpiece, best quality, newest, highres`.
-- **In training captions:** these are legitimate `[quality/meta]` tags and may lead
-  the caption, but they are optional — do **not** confuse them with *negative*
-  artefacts (`worst quality`, `low quality`, `jpeg artifacts`, `blurry`), which are
-  negative-prompt tags and must be stripped from captions (see Tag hygiene). The WD14
-  export blacklist in `lora-pipeline` already drops the negatives and the WD14 rating
-  words (`general` / `sensitive` / `questionable` / `explicit`).
+  `masterpiece, best quality, score_7, safe` for Anima base.
+- **In training captions:** human quality and `score_9` through `score_1` are valid
+  conditional labels only when they describe that image. Do not stamp one quality
+  label over an unscored dataset. Source-noise tags such as `watermark`, `signature`,
+  and `jpeg artifacts` should still be removed.
 
 ### Why commas are load-bearing (trainer machinery)
 
@@ -140,10 +137,13 @@ The single most important caption decision for a **character/concept LoRA**.
 - Pick a **short, rare, non-dictionary token** so it does not collide with the
   base model's existing concepts (`zkz`, `mych4r`, `ohwx_girl` — not `mychar` or
   `girl`).
-- Put it **first** in every caption (the first comma-separated tag).
+- Put it in the documented character section in every caption. It need not be the
+  first comma-separated item when quality/meta/safety and count precede it.
 - It must appear in **~100% of captions** — `dataset-doctor --trigger zkz` reports
-  presence % and first-position %, and fails the gate if it is inconsistent.
-- When auto-tagging with WD14, force it via `additional_tags` (see `trainer-api.md`).
+  presence and flags inconsistent coverage.
+- For Anima, pass it through `tag_dataset.py --trigger` so template export places it in
+  the documented section. The trainer's generic tagger uses `additional_tags` for
+  other base-model paths (see `trainer-api.md`).
 - **Style/artist LoRA: use Anima's `@` artist namespace** (`@mystyle`). The
   official card is explicit that artists must be prefixed with `@` — "the
   effect will be very weak without it". Do **not** use `@` for character
@@ -169,15 +169,13 @@ bake-ins to prune.
 
 ---
 
-## Anima tagging craft — the asymmetric-error rules
+## Anima tagging craft — precision-oriented rules
 
-The single fact that reshapes everything: **Anima was pretrained on tags, natural
-language, and both together, with random tag dropout — so a *missing* tag is
-tolerated, but a *wrong/invented* tag is actively harmful.** This is the opposite of
-the SDXL/booru instinct to maximize recall (dump every tag WD14 emits). For Anima,
-**prefer a clean, high-precision caption over a complete one.** (Verified against the
-`sd-image-sorter` tagger audit, `claude-code-sd-image-sorter-tagger-audit-REPORT.md`;
-`lora-pipeline/scripts/tag_dataset.py` automates the rules below.)
+Anima was pretrained on tags, natural language, combinations of both, and random tag
+dropout. The official card therefore says every relevant tag is not required. That does
+not quantify the cost of false positives, but invented tags still describe the wrong
+training target, so prefer reviewed, high-precision captions over maximum recall.
+`lora-pipeline/scripts/tag_dataset.py` applies the reproducible rules below.
 
 ### 1. Section order, not confidence order
 
@@ -189,7 +187,7 @@ order*. Emit the documented sections instead:
 {quality}, {safety}, {count}, {trigger}, {characters}, {series}, {@artists}, {general}. {NL}
 ```
 
-`masterpiece, best quality, safe, 1girl, mych4r, silver hair, … . An anime girl stands …`
+`masterpiece, best quality, score_7, safe, 1girl, mych4r, silver hair, … . An anime girl stands …`
 
 Doing this requires knowing each tag's **category** (WD14 tags carry general vs
 character vs rating). The sd-image-sorter `template` export with `preset_id="anima"`
@@ -206,14 +204,12 @@ list** (a caption must never carry two contradictory ratings). Many character-Lo
 recipes drop the rating token entirely — either is defensible; what's wrong is leaving
 raw `questionable`/`general` in the tag body.
 
-### 3. Quality tags: `masterpiece, best quality` — but don't fake per-image quality
+### 3. Quality tags: use a measured label or omit it
 
-The safe, on-card Anima quality prefix is **`masterpiece, best quality`** (Anima's
-quality vocab is `masterpiece/best/good/normal/low/worst quality` — **not** Pony's
-`score_5`, which is out-of-vocabulary). Ideally quality is *derived per image* from an
-aesthetic score and **omitted when unscored** ("no token beats a meaningless one");
-stamping `masterpiece` on a mediocre image teaches the wrong thing. If you have no
-scorer, the constant `masterpiece, best quality` prefix is acceptable.
+Anima supports human labels (`masterpiece` through `worst quality`) and aesthetic
+labels (`score_9` through `score_1`). Derive them per image from a human or compatible
+scorer and omit them when unscored. `tag_dataset.py` explicitly sends an empty quality
+override by default so the sorter's preset cannot stamp one label over every image.
 
 ### 4. The caption-paradox prune, done properly (character LoRAs)
 
@@ -229,35 +225,39 @@ scorer, the constant `masterpiece, best quality` prefix is acceptable.
 3. **Only prune a trait that's actually invariant** — i.e. it appears in a high
    fraction (≈ **≥0.9**) of the set. A one-off "wet hair" in one shot must NOT be
    pruned. sd-image-sorter's `trait-candidates` endpoint computes these ratios;
-   `tag_dataset.py` blacklists the ≥0.9 ones and **prints every candidate** so the
-   prune is reviewed, never silent.
+   `tag_dataset.py` blacklists the ≥0.9 ones and writes every candidate and decision
+   to `<concept>.tag-audit.json`; printing is not considered human approval.
 
 **Style LoRAs invert this:** prune the *style/artist* tags (so the style isn't named
 in every caption — the trigger carries it) and **keep** all content/subject tags;
 skip trait-pruning entirely.
 
-### 5. Pick a clean tagger; never trust a captioner as a tagger
+### 5. Pick a documented tagger and review a sample
 
-From a measured 6-tagger shootout on real images (audit §9.1):
+The two default WD14 models publish different validation metrics and operating points.
+Those model-card numbers are useful starting evidence, but they are not a direct benchmark
+on your dataset and do not prove either model is hallucination-free:
 
 | model | use | why |
 |---|---|---|
-| `wd-eva02-large-tagger-v3` | **best default** | swinv2 precision + extra true detail, no hallucinations |
-| `wd-swinv2-tagger-v3` | safe/light default | clean, misses niche detail, no hallucinations |
-| `pixai-tagger-v0.9` | **consensus only** | highest recall but *confident* hallucinations above its own threshold (two guitars, phantom objects) |
-| `camie-tagger-v2` | ok *after* head-fix | must read the refined output head or characters score ~0 |
-| `toriigate-0.5` | **captioner only** | as a tagger it invents anatomy at confidence 1.0 — never use it for tags; use it/ a VLM for the NL sentence |
+| `wd-eva02-large-tagger-v3` | suite default | published v1.0 P=R threshold `0.5296`, F1 `0.4772`; heavier runtime |
+| `wd-swinv2-tagger-v3` | lighter alternative | published v2.0 P=R threshold `0.2653`, F1 `0.4541` |
+| `pixai-tagger-v0.9` | optional consensus member | different model/calibration; this suite does not use it alone by default |
+| VLM captioners | optional NL sentence | use for prose, not as a drop-in replacement for category-aware WD tag rows |
 
-**Consensus** (vote of swinv2 + eva02 + pixai, keep a tag if ≥2 agree) removes ~90% of
-pixai's hallucinations while keeping its true finds — the "thorough" setting.
+**Consensus** keeps a tag when at least two of swinv2, eva02, and pixai agree. It can
+reduce single-model errors, but it also changes recall and calibration; treat it as an
+optional mode and inspect the resulting audit rather than assuming it is strictly better.
 
 ### 6. Thresholds are per-model, not global
 
-`threshold=0.35` is the WD14 default, but the *same* 0.35 on other models is a footgun
-(0.35 on OppaiOracle produced ~2,000 tags/image). Bind the threshold to the model.
-Keep the **character threshold high (≈0.85)**: character-name tags are
-high-confidence-or-wrong, and under the asymmetric rule a hallucinated identity is
-worse than a missing one.
+The published P=R points differ substantially: EVA02 v1.0 is `0.5296`, while SwinV2
+v2.0 is `0.2653`. They are transparent starting points, not universal optima;
+calibrate upward when a reviewed sample shows false positives. `tag_dataset.py` binds
+these defaults to the selected model and requires an explicit threshold for unknown
+models. Keep the **character threshold conservative (≈0.85)**: character-name tags are
+especially costly when wrong because it teaches the wrong identity; review a sample and
+raise or lower the threshold from evidence.
 
 ### 7. Small traps that silently degrade captions
 
@@ -275,9 +275,9 @@ worse than a missing one.
 
 - **One line per caption.** The trainer silently drops every line after the
   first — `dataset-doctor` flags this as `multiline_caption` (HIGH).
-- **Negative/quality artefacts don't belong in training captions.** Tags like
-  `worst quality`, `low quality`, `jpeg artifacts`, `watermark`, `signature`,
-  `text`, `bad anatomy` are *negative-prompt* tags. Remove them.
+- **Source-noise tags don't belong in training captions.** Remove `jpeg artifacts`,
+  `watermark`, `signature`, usernames, logos, and unrelated text. Valid per-image
+  quality labels are not source noise.
 - **Be consistent: underscores vs spaces.** WD14 defaults to spaces
   (`replace_underscore=true`), matching Anima's official "spaces, not
   underscores" rule. Pick one and stick to it across the whole set.
@@ -288,12 +288,12 @@ worse than a missing one.
 
 ---
 
-## WD14 auto-tagging defaults (for reference)
+## SD-Trainer generic WD14 defaults (other base-model paths)
 
 | setting | default | tune when |
 |---|---|---|
 | `interrogator_model` | `wd14-convnextv2-v2` | bundled; swap for other WD models |
-| `threshold` | `0.35` | raise for fewer/cleaner tags, lower for coverage |
+| `threshold` | `0.35` in the generic endpoint | calibrate on a reviewed sample |
 | `character_threshold` | `0.6` | character-name tags |
 | `replace_underscore` | `true` | keep on for SDXL/Anima space-style tags |
 | `additional_tags` | `""` | **put the trigger word here** |
@@ -302,9 +302,9 @@ worse than a missing one.
 WD14 writes tags only. To add a natural-language line, append it manually (or
 with a VLM) after the tags on the **same line**, separated by `. `.
 
-Typical flow: WD14 auto-tag with the trigger in `additional_tags` →
-`dataset-doctor` to verify trigger consistency + prune artefacts/ubiquitous tags
-→ train.
+Typical non-Anima flow: WD14 auto-tag with the trigger in `additional_tags` →
+`dataset-doctor` to verify trigger consistency and inspect hygiene findings → train.
+For Anima, use the sectioned `tag_dataset.py` flow documented above.
 
 ---
 

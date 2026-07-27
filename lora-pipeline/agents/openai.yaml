@@ -1,0 +1,4 @@
+interface:
+  display_name: "LoRA Pipeline"
+  short_description: "Build, train, validate, and stage an Anima LoRA"
+  default_prompt: "Use $lora-pipeline to build and validate an Anima LoRA, stopping at a Civitai draft."

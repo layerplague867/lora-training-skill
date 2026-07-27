@@ -37,7 +37,7 @@ in the JSON body).
 
 | key | default | guidance |
 |---|---|---|
-| `network_dim` | `16` | 4–128. Character: 16–32. Style: 16–64. **Not "bigger is better."** T-LoRA: 32 |
+| `network_dim` | server `16`; suite `32` | Anima author recommends rank 32 as the first LoRA trial. LoKr low-VRAM preset remains 16. |
 | `network_alpha` | `16` | = dim, or dim/2, or 1. T-LoRA: = dim |
 | `network_dropout` | `0` | LoRA dropout |
 | `network_train_unet_only` | `true` | keep true unless you know you need the text encoder |
@@ -47,7 +47,7 @@ in the JSON body).
 
 | key | default (Anima) | notes |
 |---|---|---|
-| `unet_lr` | **`5e-5`** | server rewrites the legacy `1e-4` default to `5e-5` for Anima |
+| `unet_lr` | server `5e-5`; suite **`2e-5`** | Anima author recommends starting rank-32 LoRA at `2e-5`; the server rewrite is an implementation default, not that recommendation |
 | `text_encoder_lr` | `1e-5` | only used if training the TE |
 | `learning_rate` | `1e-4` | ignored once `unet_lr`/`text_encoder_lr` are set |
 | `lr_scheduler` | `cosine_with_restarts` | also: `cosine`, `constant`, `linear`, `polynomial`, `constant_with_warmup` |
@@ -76,10 +76,10 @@ in the JSON body).
 
 | key | default | notes |
 |---|---|---|
-| `caption_extension` | `.txt` | the only **verified** caption format: single line, `trigger, tags. natural language` (see `caption-guide.md`) |
-| `prefer_json_caption` | `true` | ⚠️ **UI-only in v2.7.0** — passed through, but no code in the install reads `.json` sidecars; keep captions in `.txt` |
+| `caption_extension` | `.txt` | the only **verified** caption format: single-line Anima sections and tags, optionally followed by `. ` and natural language (see `caption-guide.md`) |
+| `prefer_json_caption` | do not send | UI-only in v2.7.0; no code in the inspected install reads `.json` sidecars |
 | `shuffle_caption` | `false` | splits on `caption_separator` (default `,`) and re-joins with `", "`; an NL sentence with commas gets shredded — keep off, or pin prefix/suffix with `keep_tokens_separator` |
-| `keep_tokens` | `0` | keep the first N **comma units** fixed when shuffling (set ≥1 to protect a trigger); `keep_tokens_separator` (e.g. `\|\|\|`) can pin a prefix *and* suffix |
+| `keep_tokens` | `0` | keep the first N **comma units** fixed when shuffling; an Anima trigger is not necessarily first, so preserve every unit through the trigger or use `keep_tokens_separator` to pin a prefix and suffix |
 | `caption_tag_dropout_rate` | *(unset)* | random per-tag dropout (also splits on commas) |
 
 > **Conflict:** `cache_text_encoder_outputs=true` requires `shuffle_caption=false`.
@@ -150,9 +150,9 @@ steps_per_epoch  = ceil(effective_images / train_batch_size)
 total_steps      = steps_per_epoch × max_train_epochs
 ```
 
-Rules of thumb (character LoRA, Anima/SDXL-class):
+Initial budgeting heuristics (character LoRA, Anima/SDXL-class):
 
-- Aim for **~1000–2500 total steps** for a small character set.
+- Use **~1000–2500 total steps** only as a first-run range for a small character set.
 - Balance `repeats` so a small concept is seen enough but does not overpower others.
 - Fewer images → more repeats; more images → fewer repeats.
 - Use `dataset-doctor` (`--epochs N --batch-size B`) to print the exact step budget before launching.
@@ -168,8 +168,7 @@ Common starting points:
 
 ### Auto-pick (lora-trainer quick path)
 
-Deterministic defaults so a beginner never does this math — they reproduce the
-table above and land near the 1500-step sweet spot:
+Deterministic first-run defaults so a beginner does not need to do this math:
 
 ```
 repeats = clamp(round(150 / images), 1, 10)
@@ -178,5 +177,5 @@ total_steps ≈ images × repeats × epochs ≈ 1500
 ```
 
 Examples: 12 imgs → 10 repeats · 30 imgs → 5 · 75 imgs → 2 · 200 imgs → 1.
-Only override when the user asks, or when total_steps falls outside
-~1000–2500 (then nudge epochs first, repeats second).
+Always recompute after curation/dedupe. Compare fixed-seed snapshots and adjust epochs;
+do not treat 1500 as a universal optimum across LoRA type, rank, LR, or task complexity.

@@ -10,7 +10,7 @@ kohya/sd-scripts dataset convention:
     train_data_dir/
         <repeats>_<concept>/      e.g. "7_zkz"  -> 7 repeats, concept "zkz"
             img001.png
-            img001.txt            sidecar caption (.json preferred for Anima)
+            img001.txt            sidecar caption (.txt is the training source of truth)
             ...
 
 These helpers know how to walk that layout and pair every image with its
@@ -152,16 +152,15 @@ def iter_images(root: Path, recursive: bool = True) -> list[Path]:
     and must not count as training data."""
     walker = root.rglob("*") if recursive else root.glob("*")
     return sorted(
-        p for p in walker
-        if p.is_file() and is_image(p) and QUARANTINE_DIR_NAME not in p.parts
+        p for p in walker if p.is_file() and is_image(p) and QUARANTINE_DIR_NAME not in p.parts
     )
 
 
-def find_caption_path(image_path: Path, prefer_json: bool = True) -> Optional[Path]:
+def find_caption_path(image_path: Path, prefer_json: bool) -> Optional[Path]:
     """Locate the sidecar caption for an image.
 
     With ``prefer_json`` the same-stem ``.json`` wins when present, else the
-    ``.txt`` is used. Returns ``None`` when neither exists.
+    ``.txt`` is used. Without it, only the trainer-supported ``.txt`` counts.
     """
     json_path = image_path.with_suffix(CAPTION_JSON_EXT)
     txt_path = image_path.with_suffix(CAPTION_TXT_EXT)
@@ -169,8 +168,6 @@ def find_caption_path(image_path: Path, prefer_json: bool = True) -> Optional[Pa
         return json_path
     if txt_path.is_file():
         return txt_path
-    if json_path.is_file():
-        return json_path
     return None
 
 

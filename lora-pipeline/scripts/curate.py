@@ -4,65 +4,25 @@ and write a keep/drop manifest. Image-only: the danbooru `.txt` is used for
 filtering, not copied (we re-tag with WD14 in tag_dataset.py).
 
 Usage:
-  python curate.py --work "D:/work/mychar"           # dry-run report + manifest
-  python curate.py --work "D:/work/mychar" --tiny 512 # tune the short-side floor
+  python curate.py --work "D:/work/mychar" --subject-tag 1girl
+  python curate.py --work "D:/work/style" --style
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
 
 from PIL import Image
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import dataset_profile as profile  # noqa: E402
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
-
-# Sidecar tags that mark an image as unsuitable for a solo-character set.
-MULTI_SUBJECT = {
-    "2girls",
-    "3girls",
-    "4girls",
-    "5girls",
-    "6+girls",
-    "multiple girls",
-    "2boys",
-    "3boys",
-    "multiple boys",
-    "multiple views",
-    "comic",
-    "4koma",
-    "reference sheet",
-    "character sheet",
-}
-
-# For a STYLE LoRA the target is the ARTIST's rendering, not one character — so
-# multi-subject / boys / nsfw are all valid style samples and must be KEPT. The only
-# genuinely harmful inputs are multi-image compositions (panels/sheets stitch several
-# drawings + text into one file) and tiny/corrupt images. This is that subset.
-COMIC_SHEET = {
-    "comic",
-    "4koma",
-    "multiple views",
-    "reference sheet",
-    "character sheet",
-}
-
-# Off-model content that muddies a single-character identity (learned the hard way:
-# top danbooru fanart of a popular character is full of genderswaps, futanari, cosplay,
-# and male-present scenes). Matched as a substring of any sidecar tag ("genderswap" catches
-# "genderswap (mtf)"). ALWAYS dropped — wrong sex/identity is off-model.
-OFFMODEL_KEYWORDS = (
-    "genderswap",
-    "futanari",
-    "cosplay",
-    "1boy",
-    "2boys",
-    "3boys",
-    "multiple boys",
-    "penis",
-    "testicles",
-)
 
 # Explicit content — dropped by default for a SFW character LoRA; --keep-nsfw keeps it.
 # (A character LoRA learns identity fine from SFW; explicit art also skews the trigger.)
@@ -82,22 +42,20 @@ NSFW_KEYWORDS = (
 
 
 def parse_tags(txt_path: Path) -> set[str]:
-    if not txt_path.exists():
-        return set()
-    raw = txt_path.read_text(encoding="utf-8", errors="replace")
-    return {t.strip().lower() for t in raw.split(",") if t.strip()}
+    return profile.parse_tags_file(txt_path)
 
 
 def match_keyword(tags: set[str], keywords) -> list[str]:
     """Return the keywords that appear as a substring of any tag (deduped, sorted)."""
-    hit = {k for k in keywords if any(k in t for t in tags)}
-    return sorted(hit)
+    return profile.match_keywords(tags, tuple(keywords))
+
+
+def source_url(image: Path) -> str | None:
+    return f"https://danbooru.donmai.us/posts/{image.stem}" if image.stem.isdigit() else None
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="Curate raw downloads into a keep/drop manifest."
-    )
+    ap = argparse.ArgumentParser(description="Curate raw downloads into a keep/drop manifest.")
     ap.add_argument(
         "--work",
         required=True,
@@ -109,9 +67,7 @@ def main() -> int:
         default=512,
         help="drop images whose short side < this (default 512)",
     )
-    ap.add_argument(
-        "--lowres", type=int, default=768, help="keep-but-note threshold (default 768)"
-    )
+    ap.add_argument("--lowres", type=int, default=768, help="keep-but-note threshold (default 768)")
     ap.add_argument(
         "--keep-nsfw",
         action="store_true",
@@ -123,7 +79,14 @@ def main() -> int:
         help="STYLE LoRA mode: keep nsfw/multi-subject/male (all valid style samples); "
         "drop ONLY multi-image comics/sheets + tiny/corrupt. Implies --keep-nsfw.",
     )
+    ap.add_argument(
+        "--subject-tag",
+        choices=profile.SUBJECT_TAGS,
+        help="character subject count tag; required unless --style",
+    )
     a = ap.parse_args()
+    if not a.style and not a.subject_tag:
+        ap.error("--subject-tag is required for character curation")
 
     work = Path(a.work).resolve()
     raw = work / "raw"
@@ -152,11 +115,11 @@ def main() -> int:
         reasons: list[str] = []
         # STYLE mode keeps multi-subject/male/nsfw (all valid style samples) and only
         # rejects multi-image comics/sheets; character mode is the stricter solo filter.
-        bad = sorted(tags & (COMIC_SHEET if a.style else MULTI_SUBJECT))
+        bad = sorted(tags & (profile.COMIC_SHEET if a.style else profile.MULTI_SUBJECT))
         if bad:
             reasons.append("comic/sheet:" + "+".join(bad))
         if not a.style:
-            offmodel = match_keyword(tags, OFFMODEL_KEYWORDS)
+            offmodel = match_keyword(tags, profile.offmodel_keywords(a.subject_tag))
             if offmodel:
                 reasons.append("off-model:" + "+".join(offmodel))
             if not a.keep_nsfw:
@@ -174,6 +137,7 @@ def main() -> int:
             "short": short,
             "n_tags": len(tags),
             "solo": "solo" in tags,
+            "source": source_url(img),
             "reasons": reasons,
         }
         if reasons:
@@ -182,9 +146,7 @@ def main() -> int:
             rec["note_lowres"] = short < a.lowres
             keep.append(rec)
 
-    manifest.write_text(
-        json.dumps({"keep": keep, "drop": drop}, indent=2), encoding="utf-8"
-    )
+    manifest.write_text(json.dumps({"keep": keep, "drop": drop}, indent=2), encoding="utf-8")
     print(f"KEEP: {len(keep)}   DROP: {len(drop)}   -> {manifest.name}")
     for d in drop:
         print(f"  drop {d['file']}: {d.get('reason') or ', '.join(d['reasons'])}")
@@ -193,13 +155,9 @@ def main() -> int:
     modes: dict[str, int] = {}
     for k in keep:
         modes[k["mode"]] = modes.get(k["mode"], 0) + 1
-    print(
-        f"KEEP stats — lowres(<{a.lowres}): {lowres}  non-solo: {nonsolo}  modes: {modes}"
-    )
+    print(f"KEEP stats — lowres(<{a.lowres}): {lowres}  non-solo: {nonsolo}  modes: {modes}")
     if len(keep) < 15:
-        print(
-            "WARNING: <15 keeps — consider a broader tag or higher --limit before training."
-        )
+        print("WARNING: <15 keeps — consider a broader tag or higher --limit before training.")
     return 0
 
 

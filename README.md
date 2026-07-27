@@ -1,13 +1,14 @@
 # LoRA Training Skill Suite
 
 **Bring a folder of images. Leave with a trained LoRA.**
-Or bring just a **name** — `lora-pipeline` collects, tags, curates, trains, validates,
-and stages a **Civitai draft**, stopping only for you to click Publish.
+Or bring just a **name** — `lora-pipeline` collects, curates, tags, trains, validates,
+and stages a **Civitai draft** for you to review and publish manually.
 
 A small family of agent skills (open [SKILL.md format](https://developers.openai.com/codex/skills))
 that turns LoRA training on the [`lora-scripts-next`](https://github.com/wochenlong/lora-scripts-next)
-trainer (a.k.a. *Next Trainer* / SD-Trainer) into a guided, quality-gated, one-confirmation
-workflow — **Anima-first**, with SD1.5 / SDXL / Flux support.
+trainer (a.k.a. *Next Trainer* / SD-Trainer) into a guided, quality-gated training
+workflow with separate approval for dataset repairs and manual publishing —
+**Anima-first**, with SD1.5 / SDXL / Flux support.
 
 Built for **Claude Code**, and works in any SKILL.md-compatible agent —
 **OpenCode, Codex CLI, OpenClaw** — see [Compatibility](#compatibility-claude-code-opencode-codex-openclaw).
@@ -65,8 +66,9 @@ The trainer's GUI has ~80 knobs, but whether a LoRA turns out well is mostly dec
 2. **The step budget** — repeats × images × epochs. Too low: nothing is learned.
    Too high: a fried, overfitted LoRA.
 
-This suite automates both, and keeps the human in exactly one loop: a single
-plain-language confirmation card before training starts.
+This suite automates both while keeping decisions explicit: reversible dataset repairs
+are confirmed after a dry-run, training has one plain-language confirmation card, and
+publishing remains a separate manual click.
 
 ## What it feels like
 
@@ -87,13 +89,14 @@ Agent: (POSTs /api/run, tails the live log, then tells you which
         .safetensors snapshot to try first)
 ```
 
-Every step that touches your files is **dry-run first, confirmed, and reversible**.
+Dataset repairs are **dry-run first, confirmed, and reversible**. Pipeline build outputs
+are derived artifacts: they are rebuilt from the manifest so stale files cannot leak into a run.
 
 ## The skill family
 
 | Skill | What it does |
 |---|---|
-| **`lora-pipeline`** | **End-to-end conductor.** From just a character/concept *name*: collect images (Danbooru) → auto-tag (WD14) → curate + build the dataset → doctor gate → train (via `lora-trainer`) → validate a sample gallery (ComfyUI) → package + fill the Civitai upload wizard and **stop at Draft** for you to click Publish. Never trains without the confirm card; never auto-publishes. |
+| **`lora-pipeline`** | **End-to-end conductor.** From just a character/concept *name*: collect images (Danbooru) → curate + build the dataset → auto-tag (WD14) and review → doctor gate → train (via `lora-trainer`) → validate a sample gallery (ComfyUI) → package + fill the Civitai upload wizard and **stop at Draft** for you to click Publish. Never trains without the confirm card; never auto-publishes. |
 | **`lora-trainer`** | Training-orchestration entry. **Quick path needs only a folder of images**: auto-organize → auto-tag → doctor gate → auto-pick params from image count + detected VRAM → one confirm card → launch & monitor via the trainer's HTTP API. An expert path accepts explicit presets/dims/LRs. |
 | **`dataset-doctor`** | Dataset + caption audit → **PASS / WARN / FAIL** verdict with prioritized fixes. Every finding maps to a one-line `fix_dataset.py` command — **dry-run by default, originals quarantined, never deleted**. |
 | `references/` | Shared knowledge the skills cite: trainer API contract, Anima parameters, caption guide, presets, plus the collect-and-tag and validate-and-publish contracts for the full pipeline. |
@@ -101,12 +104,12 @@ Every step that touches your files is **dry-run first, confirmed, and reversible
 ```
 lora-training-skill/
 ├── lora-pipeline/               # end-to-end: name → collect → … → Civitai draft
-│   ├── SKILL.md                 # the 7-phase conductor (two human gates)
+│   ├── SKILL.md                 # the 7-phase conductor (explicit human approvals)
 │   └── scripts/
 │       ├── collect.py           # Danbooru download (2-tag-safe config)
 │       ├── curate.py            # drop multi/comic/tiny/corrupt → keep/drop manifest
 │       ├── build_dataset.py     # copy keeps → <repeats>_<concept>/, RGB-normalize
-│       ├── tag_dataset.py       # Anima-correct WD14 tagging (section order + trait prune)
+│       ├── tag_dataset.py       # Anima WD14 tagging (section order + reviewable trait audit)
 │       ├── validate.py          # ComfyUI Anima+LoRA sample gallery
 │       └── make_civitai_pack.py # assemble model card + *.civitai.json + samples/
 ├── lora-trainer/
@@ -119,7 +122,9 @@ lora-training-skill/
 │   │   ├── check_captions.py    # caption-level audit (trigger, tags, JSON, hygiene)
 │   │   ├── doctor.py            # orchestrator → PASS/WARN/FAIL verdict
 │   │   └── fix_dataset.py       # safe fixer: organize/dedupe/to-rgb/add-trigger/strip-tags
-│   └── tests/                   # 30 stdlib unittest tests
+│   └── tests/                   # dataset-doctor behavior tests
+├── lora-pipeline/tests/         # focused pipeline integration tests
+├── tests/                       # public skill package and metadata tests
 └── references/
     ├── trainer-api.md           # mikazuki HTTP API (/api/run, /api/interrogate, SSE)
     ├── anima-params.md          # params, defaults, VRAM table, step-budget math
@@ -136,7 +141,7 @@ lora-training-skill/
 ```
 image folder
    │  organize (<repeats>_<concept>)        fix_dataset.py · dry-run → confirm → --apply
-   │  auto-caption (WD14 tagger)            POST /api/interrogate
+   │  auto-caption (Anima)                  tag_dataset.py + sd-image-sorter
    ▼
 dataset-doctor gate                          doctor.py → PASS / WARN / FAIL
    │  fix findings (dedupe, to-rgb, …)      fix_dataset.py · originals → _quarantine/
@@ -156,8 +161,8 @@ character name
    │ 1 COLLECT   collect.py      Danbooru → raw/ (+ .txt sidecars)
    │ 2 CURATE    curate.py       drop multi/comic/tiny/corrupt → manifest
    │   BUILD     build_dataset.py keeps → <repeats>_<concept>/, RGB-normalize
-   │ 3 TAG       tag_dataset.py  WD14 (sd-image-sorter) → trigger-first captions
-   ▼ 4 DOCTOR ── same gate as above ── PASS
+   │ 3 TAG       tag_dataset.py  WD14 → Anima-sectioned captions + semantic audit
+   ▼ 4 DOCTOR ── same gate as above ── PASS / accepted WARN
    │ 5 TRAIN     → delegates to lora-trainer (📋 confirm card required)
    ▼ 6 VALIDATE  validate.py     ComfyUI Anima+LoRA sample gallery
    │ 7 PACKAGE   make_civitai_pack.py → model card + *.civitai.json + samples/
@@ -174,11 +179,16 @@ character name
 - **Any Python 3.10+ with Pillow** for the scripts (no GPU needed). The trainer's
   bundled interpreter works out of the box: `<SD-Trainer>/python_embeded/python.exe`.
 
+Install the local Python dependency with `python -m pip install -r requirements.txt`.
+Contributors can use `requirements-dev.txt`; the Civitai tool additionally uses
+`requirements-uploader.txt` and `python -m playwright install chromium`.
+
 `dataset-doctor` works fully offline; `lora-trainer` talks to the trainer's local API.
 
-**For the full `lora-pipeline`** you also need three local tools it drives (all optional
+**For the full `lora-pipeline`** you also need local tools it drives (all optional
 if you only want training): [DanbooruDownload](https://github.com/storyAura/DanbooruDownload)
-(image collection), an sd-image-sorter WD14 service (tagging, `:8487`), ComfyUI
+(image collection), [sd-image-sorter](https://github.com/Rinne414/sd-image-sorter)
+(tagging, `:8487`; known-compatible revision in `references/collect-and-tag.md`), ComfyUI
 (validation, `:8188`), and the standalone **civitai-uploader** (Playwright, fills the
 Civitai wizard). Paths/ports are configurable per script — see
 [`references/collect-and-tag.md`](references/collect-and-tag.md) and
@@ -196,15 +206,16 @@ paths — `env.bat` is gitignored.
 
 ## Install
 
-**Keep the repo together** — the skills reference `../references/` and each other by
-relative path, so the three top-level folders must stay siblings.
+Place `lora-pipeline/`, `lora-trainer/`, `dataset-doctor/`, and `references/` directly
+inside your agent's skills root. They must stay siblings because the skills use relative
+paths to share scripts and references.
 
 | Agent | Where to put it |
 |---|---|
-| **Claude Code** | Drop the whole repo under `~/.claude/skills/` (or the project's `.claude/skills/`). |
+| **Claude Code** | Put the four sibling folders above directly under `~/.claude/skills/` (or the project's `.claude/skills/`). |
 | **OpenCode** | Same paths work — OpenCode natively reads `.claude/skills/` and `~/.claude/skills/` (or use `.opencode/skills/`). |
-| **Codex CLI** | Drop the repo under `~/.codex/skills/` (or `.codex/skills/` in a repo). Invoke via `$skill-name` / `/skills`, or let it trigger on the description. |
-| **OpenClaw** | Drop it under `<workspace>/skills/` or `~/.openclaw/skills/`. |
+| **Codex CLI** | Put the four sibling folders directly under `~/.codex/skills/` (or `.codex/skills/` in a repo). Invoke via `$skill-name` / `/skills`, or let it trigger on the description. |
+| **OpenClaw** | Put the four sibling folders directly under `<workspace>/skills/` or `~/.openclaw/skills/`. |
 | **Anything else** | The skills are plain markdown + stdlib-Python scripts + HTTP calls — tell your agent to read `lora-trainer/SKILL.md` and follow it. |
 
 Then just ask: *"check my dataset before training"* or *"train a LoRA from this folder"*.
@@ -233,8 +244,8 @@ Short answer: **launching is SD-Trainer-specific; checking and fixing are not.**
 - **`dataset-doctor`** (scan / check / fix) is **trainer-agnostic**: it audits the
   standard kohya dataset convention — `<repeats>_<concept>` folders + sidecar
   caption files — shared by sd-scripts, kohya_ss, and most LoRA trainers. It's
-  useful before training on *anything*. (Only the optional Anima `.json` caption
-  checks and the WD14 tagging endpoint are SD-Trainer-specific.)
+  useful before training on *anything*. Optional Anima `.json` checks are model-specific,
+  while automatic tagging depends on the configured sorter or trainer endpoint.
 - The parameter knowledge (`anima-params.md`, the presets) is ultimately
   [kohya sd-scripts](https://github.com/kohya-ss/sd-scripts) vocabulary, so it
   transfers to any kohya-based pipeline.
@@ -250,11 +261,11 @@ the trainer's own source code (SD-Trainer v2.7.0, vendored kohya sd-scripts),
 instead of folklore. The short version:
 
 ```
-<trigger>, <tag>, <tag>, …, <tag>. <Optional natural-language sentences, normal prose punctuation.>
+<quality/meta/safety>, <count>, <trigger>, <tag>, … . <Optional natural-language sentences.>
 ```
 
-- **Comma** between the trigger and the tags (the trigger is just the first
-  tag). **Period + space** between the tag block and the natural-language
+- **Comma** between sections; a character trigger follows metadata and count rather
+  than being forced into the first position. **Period + space** separates optional prose
   part — exactly what the official card demonstrates:
   `masterpiece, best quality, @big chungus. An anime girl with medium-length blonde hair is...`
 - **One line only.** kohya's `read_caption` keeps just the first line of a
@@ -279,17 +290,19 @@ Full rules, examples, and the line-by-line evidence:
 
 ## Safety model
 
-- **Quality gate, not just a launcher.** No training run starts without a doctor verdict.
-- **One confirmation, always.** The assembled config is shown in plain language and the
+- **Structural gate, not a semantic oracle.** No run starts without a doctor verdict,
+  but PASS does not replace review of images, captions, and the post-tag semantic audit.
+- **Training confirmation.** The assembled config is shown in plain language and the
   user must explicitly confirm before `POST /api/run`.
-- **Dry-run + quarantine.** Every `fix_dataset.py` command prints its plan first and
-  changes nothing; with `--apply`, displaced files go to `_quarantine/` inside the
-  dataset (ignored by doctor and trainer) — nothing is ever deleted.
-- **Beginner math is automated.** Repeats/epochs from a deterministic ~1500-step
-  formula; VRAM read from `/api/graphic_cards`; preset chosen accordingly. Experts can
-  override everything.
-- **Anima-first, accurate.** Defaults, enums, and quirks come from the trainer's own
-  schema (`sd3-lora.ts` / `shared.ts`) and server code — not guessed.
+- **Confirmed repairs + quarantine.** Every `fix_dataset.py` command prints its plan
+  first and changes nothing; after approval, `--apply` moves displaced files to
+  `_quarantine/` inside the dataset (ignored by doctor and trainer) — nothing is deleted.
+- **Manual publication.** Upload automation stops at a Civitai draft unless the user
+  explicitly requests publication; the documented default is to review and click Publish.
+- **Beginner math is automated.** The deterministic ~1500-step formula is a first-run
+  budget, followed by fixed-seed baseline/checkpoint comparison; it is not a universal optimum.
+- **Sources are distinguished.** API defaults come from the trainer schema; rank 32 and
+  `2e-5` come from the Anima model card; tag thresholds come from each WD model card.
 
 ## Manual CLI (no agent needed)
 

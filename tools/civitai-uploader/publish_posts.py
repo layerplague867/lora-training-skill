@@ -67,7 +67,7 @@ def main():
 
         log(f"published showcase posts for models: {done}")
         ctx.close()
-        return 0
+        return 0 if len(done) == len(model_ids) else 1
 
 
 if __name__ == "__main__":

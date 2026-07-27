@@ -6,8 +6,13 @@ Upload Wizard for you. Reusable for every future model — write one small JSON 
 Your **password is never handled here** — you type it into the browser during `login`.
 The tool **stops at Draft** and never publishes unless you explicitly ask.
 
-## One-time setup (already done)
-- venv + Playwright + Chromium are installed in `.venv/`.
+## One-time setup
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r ..\..\requirements-uploader.txt
+.venv\Scripts\python.exe -m playwright install chromium
+```
 
 ## 1) Log in once
 Double-click **`login.bat`** → a browser opens → sign in (email/Google + 2FA) → wait a few

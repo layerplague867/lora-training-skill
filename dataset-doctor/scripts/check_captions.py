@@ -4,16 +4,16 @@ Pairs every image with its sidecar caption (``.txt`` or, for Anima, ``.json``)
 and reports caption-level problems that the trainer never checks:
 
   * missing / empty captions
-  * trigger-word presence and consistency (is it in every caption, and first?)
+  * trigger-word presence and consistency across captions
   * tag-frequency distribution (ubiquitous tags that get "baked in", rare noise)
   * over-/under-tagged images
-  * negative/quality artefact tags that do not belong in training captions
+  * source-noise tags that do not belong in training captions
   * underscore vs space inconsistency and duplicate tags within a caption
   * multi-line .txt captions (the trainer reads only the first line)
   * Anima JSON structure validation (recommended key order/types)
 
 Usage:
-    python check_captions.py <path> [--trigger zkz] [--no-prefer-json]
+    python check_captions.py <path> [--trigger zkz] [--prefer-json]
                              [--no-recursive] [--json] [--report] [--output FILE]
 """
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -43,22 +44,59 @@ TRIGGER_OK_PCT = 90.0  # trigger should appear in >= this % of captions
 EMPTY_HIGH_PCT = 5.0
 MAX_EXAMPLES = 12
 
-# Negative-prompt / quality tags that usually should NOT be in a training
-# caption (they describe what you do not want, or are watermark noise).
+# Negative-prompt and source-noise tags that should not describe training images.
+# Valid Anima quality labels are deliberately excluded: accurate per-image quality
+# supervision is useful even when the same words also appear in negative prompts.
 ARTIFACT_TAGS: frozenset[str] = frozenset(
     {
-        "lowres", "worst quality", "low quality", "normal quality", "bad anatomy",
-        "bad hands", "jpeg artifacts", "signature", "watermark", "username",
-        "blurry", "text", "error", "cropped", "artist name", "logo",
+        "bad anatomy",
+        "bad hands",
+        "jpeg artifacts",
+        "signature",
+        "watermark",
+        "username",
+        "blurry",
+        "text",
+        "error",
+        "cropped",
+        "artist name",
+        "logo",
     }
 )
 
 # Recommended Anima JSON caption key order.
 ANIMA_JSON_ORDER = [
-    "quality", "count", "character", "series", "artist",
-    "appearance", "tags", "environment", "nl",
+    "quality",
+    "count",
+    "character",
+    "series",
+    "artist",
+    "appearance",
+    "tags",
+    "environment",
+    "nl",
 ]
 ANIMA_JSON_LIST_KEYS = {"appearance", "tags", "environment"}
+ANIMA_STRUCTURAL_TAGS: frozenset[str] = frozenset(
+    {
+        "masterpiece",
+        "best quality",
+        "good quality",
+        "normal quality",
+        "low quality",
+        "worst quality",
+        "safe",
+        "sensitive",
+        "nsfw",
+        "explicit",
+        "newest",
+        "recent",
+        "mid",
+        "early",
+        "oldest",
+        "highres",
+    }
+)
 
 
 # --- Tag parsing -------------------------------------------------------------
@@ -73,6 +111,22 @@ def split_tags(text: str) -> list[str]:
         if tag:
             tags.append(tag)
     return tags
+
+
+def is_anima_structural_tag(tag: str) -> bool:
+    return (
+        tag in ANIMA_STRUCTURAL_TAGS
+        or re.fullmatch(r"score_[1-9]", tag) is not None
+        or re.fullmatch(r"year \d{4}", tag) is not None
+        or re.fullmatch(r"(?:1|\d+\+?)(?:girl|girls|boy|boys|other|others)", tag) is not None
+    )
+
+
+def concept_names(root: Path) -> list[str]:
+    _repeats, direct_concept = C.parse_concept_folder(root.name)
+    if direct_concept is not None:
+        return [direct_concept.strip().lower()]
+    return [concept.concept.strip().lower() for concept in C.discover_concept_dirs(root)]
 
 
 def flatten_json_caption(obj: dict) -> list[str]:
@@ -118,18 +172,34 @@ def load_caption(caption_path: Path) -> dict:
         try:
             obj = json.loads(text) if text.strip() else {}
         except json.JSONDecodeError as exc:
-            return {"fmt": "json", "tags": [], "char_len": len(text),
-                    "empty": not text.strip(), "multiline": False,
-                    "json_problems": [f"invalid JSON: {exc}"]}
-        return {"fmt": "json", "tags": flatten_json_caption(obj),
-                "char_len": len(text), "empty": not flatten_json_caption(obj),
-                "multiline": False, "json_problems": validate_anima_json(obj)}
-    tags = split_tags(text)
+            return {
+                "fmt": "json",
+                "tags": [],
+                "char_len": len(text),
+                "empty": not text.strip(),
+                "multiline": False,
+                "json_problems": [f"invalid JSON: {exc}"],
+            }
+        return {
+            "fmt": "json",
+            "tags": flatten_json_caption(obj),
+            "char_len": len(text),
+            "empty": not flatten_json_caption(obj),
+            "multiline": False,
+            "json_problems": validate_anima_json(obj),
+        }
+    tag_section = text.partition(". ")[0]
+    tags = split_tags(tag_section)
     # kohya's read_caption keeps only the first line (train_util.py:
     # ``caption.split("\n")[0]``) — anything after a newline never trains.
-    return {"fmt": "txt", "tags": tags, "char_len": len(text),
-            "empty": len(tags) == 0, "multiline": "\n" in text.strip(),
-            "json_problems": []}
+    return {
+        "fmt": "txt",
+        "tags": tags,
+        "char_len": len(text),
+        "empty": len(tags) == 0,
+        "multiline": "\n" in text.strip(),
+        "json_problems": [],
+    }
 
 
 # --- Core analysis -----------------------------------------------------------
@@ -138,7 +208,7 @@ def load_caption(caption_path: Path) -> dict:
 def analyze_captions(
     root: Path,
     recursive: bool = True,
-    prefer_json: bool = True,
+    prefer_json: bool = False,
     trigger: Optional[str] = None,
 ) -> dict:
     root = Path(root)
@@ -211,15 +281,29 @@ def analyze_captions(
     top = [{"tag": t, "count": c} for t, c in tag_counts.most_common(25)]
 
     trigger_info = _analyze_trigger(
-        trigger, tag_counts, first_tag_counts, effective_caption_count
+        trigger,
+        tag_counts,
+        first_tag_counts,
+        effective_caption_count,
+        concept_names(root),
     )
 
     issues = _build_issues(
-        total=total, captioned=captioned, missing=missing, empty=empty,
-        under_tagged=under_tagged, over_tagged=over_tagged, dup_within=dup_within,
-        artifact_hits=artifact_hits, ubiquitous=ubiquitous, trigger_info=trigger_info,
-        json_problem_files=json_problem_files, underscore_files=underscore_files,
-        space_files=space_files, long_caption=long_caption, multiline=multiline,
+        total=total,
+        captioned=captioned,
+        missing=missing,
+        empty=empty,
+        under_tagged=under_tagged,
+        over_tagged=over_tagged,
+        dup_within=dup_within,
+        artifact_hits=artifact_hits,
+        ubiquitous=ubiquitous,
+        trigger_info=trigger_info,
+        json_problem_files=json_problem_files,
+        underscore_files=underscore_files,
+        space_files=space_files,
+        long_caption=long_caption,
+        multiline=multiline,
     )
 
     return {
@@ -256,7 +340,7 @@ def analyze_captions(
     }
 
 
-def _analyze_trigger(trigger, tag_counts, first_tag_counts, captioned) -> dict:
+def _analyze_trigger(trigger, tag_counts, first_tag_counts, captioned, concepts) -> dict:
     if captioned <= 0:
         return {"requested": trigger, "status": "no_captions"}
     if trigger:
@@ -269,11 +353,26 @@ def _analyze_trigger(trigger, tag_counts, first_tag_counts, captioned) -> dict:
             "first_position_pct": C.pct(first, captioned),
             "consistent": C.pct(present, captioned) >= TRIGGER_OK_PCT,
         }
-    # Infer a candidate: highest presence, tie-broken by first-position rate.
     if not tag_counts:
         return {"requested": None, "status": "no_tags"}
+    if len(concepts) > 1:
+        return {"requested": None, "status": "multiple_concepts", "concepts": concepts}
+    if len(concepts) == 1:
+        variants = (concepts[0], concepts[0].replace("_", " "))
+        concept_match = next((value for value in variants if value in tag_counts), None)
+        if concept_match is not None:
+            return {
+                "requested": None,
+                "inferred_candidate": concept_match,
+                "inference_source": "concept_folder",
+                "presence_pct": C.pct(tag_counts[concept_match], captioned),
+                "first_position_pct": C.pct(first_tag_counts.get(concept_match, 0), captioned),
+            }
+    candidates = [tag for tag in tag_counts if not is_anima_structural_tag(tag)]
+    if not candidates:
+        return {"requested": None, "status": "no_trigger_candidate"}
     candidate = max(
-        tag_counts,
+        candidates,
         key=lambda t: (tag_counts[t], first_tag_counts.get(t, 0)),
     )
     return {
@@ -290,80 +389,149 @@ def _build_issues(**kw) -> list[C.Issue]:
     captioned = kw["captioned"]
 
     if total == 0:
-        issues.append(C.Issue(C.SEV_CRITICAL, "no_images",
-                              "No images found to check captions against.",
-                              "Verify the dataset path."))
+        issues.append(
+            C.Issue(
+                C.SEV_CRITICAL,
+                "no_images",
+                "No images found to check captions against.",
+                "Verify the dataset path.",
+            )
+        )
         return issues
 
     if kw["empty"]:
-        sev = C.SEV_HIGH if C.pct(len(kw["empty"]), max(1, captioned)) > EMPTY_HIGH_PCT else C.SEV_MEDIUM
-        issues.append(C.Issue(sev, "empty_captions",
-                              f"{len(kw['empty'])} caption file(s) are empty.",
-                              "Re-tag with WD14 (POST /api/interrogate) or write captions.",
-                              kw["empty"][:MAX_EXAMPLES]))
+        sev = (
+            C.SEV_HIGH
+            if C.pct(len(kw["empty"]), max(1, captioned)) > EMPTY_HIGH_PCT
+            else C.SEV_MEDIUM
+        )
+        issues.append(
+            C.Issue(
+                sev,
+                "empty_captions",
+                f"{len(kw['empty'])} caption file(s) are empty.",
+                "Use tag_dataset.py for Anima, or the trainer WD14 tagger for other bases.",
+                kw["empty"][:MAX_EXAMPLES],
+            )
+        )
 
     ti = kw["trigger_info"]
     if ti.get("requested") and not ti.get("consistent", False):
-        issues.append(C.Issue(C.SEV_HIGH, "trigger_inconsistent",
-                              f"Trigger '{ti['requested']}' only appears in {ti.get('presence_pct', 0)}% "
-                              f"of captions (want >= {TRIGGER_OK_PCT}%).",
-                              "Add the trigger word as the first tag in every caption."))
+        issues.append(
+            C.Issue(
+                C.SEV_HIGH,
+                "trigger_inconsistent",
+                f"Trigger '{ti['requested']}' only appears in {ti.get('presence_pct', 0)}% "
+                f"of captions (want >= {TRIGGER_OK_PCT}%).",
+                "Add the trigger word to every caption; preserve the model's section order.",
+            )
+        )
 
     if kw["multiline"]:
-        issues.append(C.Issue(C.SEV_HIGH, "multiline_caption",
-                              f"{len(kw['multiline'])} .txt caption(s) span multiple lines; "
-                              "the trainer reads ONLY the first line, the rest is silently ignored.",
-                              "Merge each caption into one line: trigger, tags, "
-                              "then '. ' before any natural-language sentence.",
-                              kw["multiline"][:MAX_EXAMPLES]))
+        issues.append(
+            C.Issue(
+                C.SEV_HIGH,
+                "multiline_caption",
+                f"{len(kw['multiline'])} .txt caption(s) span multiple lines; "
+                "the trainer reads ONLY the first line, the rest is silently ignored.",
+                "Merge each caption into one line: Anima sections and tags, "
+                "then '. ' before any natural-language sentence.",
+                kw["multiline"][:MAX_EXAMPLES],
+            )
+        )
 
     if kw["artifact_hits"]:
-        issues.append(C.Issue(C.SEV_MEDIUM, "artifact_tags",
-                              f"{len(kw['artifact_hits'])} caption(s) contain negative/quality artefact tags "
-                              "(e.g. 'worst quality', 'watermark').",
-                              "Remove negative-prompt tags from training captions.",
-                              kw["artifact_hits"][:MAX_EXAMPLES]))
+        issues.append(
+            C.Issue(
+                C.SEV_MEDIUM,
+                "artifact_tags",
+                f"{len(kw['artifact_hits'])} caption(s) contain source-noise tags "
+                "(e.g. 'watermark', 'signature').",
+                "Remove source-noise tags from training captions.",
+                kw["artifact_hits"][:MAX_EXAMPLES],
+            )
+        )
 
-    if kw["ubiquitous"] and not ti.get("requested"):
-        baked = [u["tag"] for u in kw["ubiquitous"]]
-        issues.append(C.Issue(C.SEV_MEDIUM, "ubiquitous_tags",
-                              f"Tag(s) present in nearly every caption: {baked[:8]}. "
-                              "These get 'baked' into the concept.",
-                              "Keep ONE intended trigger ubiquitous; prune the rest if unintended."))
+    expected_trigger = str(ti.get("requested") or ti.get("inferred_candidate") or "").lower()
+    baked = [
+        item["tag"]
+        for item in kw["ubiquitous"]
+        if item["tag"] != expected_trigger and not is_anima_structural_tag(item["tag"])
+    ]
+    if baked:
+        issues.append(
+            C.Issue(
+                C.SEV_MEDIUM,
+                "ubiquitous_tags",
+                f"Tag(s) present in nearly every caption: {baked[:8]}. "
+                "These get 'baked' into the concept.",
+                "Keep ONE intended trigger ubiquitous; prune the rest if unintended.",
+            )
+        )
 
     if kw["over_tagged"]:
-        issues.append(C.Issue(C.SEV_MEDIUM, "over_tagged",
-                              f"{len(kw['over_tagged'])} caption(s) have > {OVER_TAGGED} tags.",
-                              "Trim weak/irrelevant tags; they dilute learning.",
-                              kw["over_tagged"][:MAX_EXAMPLES]))
+        issues.append(
+            C.Issue(
+                C.SEV_MEDIUM,
+                "over_tagged",
+                f"{len(kw['over_tagged'])} caption(s) have > {OVER_TAGGED} tags.",
+                "Trim weak/irrelevant tags; they dilute learning.",
+                kw["over_tagged"][:MAX_EXAMPLES],
+            )
+        )
     if kw["under_tagged"]:
-        issues.append(C.Issue(C.SEV_LOW, "under_tagged",
-                              f"{len(kw['under_tagged'])} caption(s) have < {UNDER_TAGGED} tags.",
-                              "Add descriptive tags so the model can disentangle the concept.",
-                              kw["under_tagged"][:MAX_EXAMPLES]))
+        issues.append(
+            C.Issue(
+                C.SEV_LOW,
+                "under_tagged",
+                f"{len(kw['under_tagged'])} caption(s) have < {UNDER_TAGGED} tags.",
+                "Add descriptive tags so the model can disentangle the concept.",
+                kw["under_tagged"][:MAX_EXAMPLES],
+            )
+        )
 
     if kw["dup_within"]:
-        issues.append(C.Issue(C.SEV_LOW, "duplicate_tags",
-                              f"{len(kw['dup_within'])} caption(s) repeat a tag within the same file.",
-                              "De-duplicate tags inside each caption.",
-                              kw["dup_within"][:MAX_EXAMPLES]))
+        issues.append(
+            C.Issue(
+                C.SEV_LOW,
+                "duplicate_tags",
+                f"{len(kw['dup_within'])} caption(s) repeat a tag within the same file.",
+                "De-duplicate tags inside each caption.",
+                kw["dup_within"][:MAX_EXAMPLES],
+            )
+        )
 
     if kw["underscore_files"] and kw["space_files"]:
-        issues.append(C.Issue(C.SEV_LOW, "underscore_inconsistent",
-                              f"Mixed tag style: {kw['underscore_files']} file(s) use underscores, "
-                              f"{kw['space_files']} use spaces.",
-                              "Pick one (WD14 default replaces underscores with spaces) and apply consistently."))
+        issues.append(
+            C.Issue(
+                C.SEV_LOW,
+                "underscore_inconsistent",
+                f"Mixed tag style: {kw['underscore_files']} file(s) use underscores, "
+                f"{kw['space_files']} use spaces.",
+                "Pick one (WD14 default replaces underscores with spaces) and apply consistently.",
+            )
+        )
 
     if kw["json_problem_files"]:
-        issues.append(C.Issue(C.SEV_MEDIUM, "json_structure",
-                              f"{len(kw['json_problem_files'])} Anima JSON caption(s) have structure problems.",
-                              f"Use the order {ANIMA_JSON_ORDER}.",
-                              [f["file"] for f in kw["json_problem_files"]][:MAX_EXAMPLES]))
+        issues.append(
+            C.Issue(
+                C.SEV_MEDIUM,
+                "json_structure",
+                f"{len(kw['json_problem_files'])} Anima JSON caption(s) have structure problems.",
+                f"Use the order {ANIMA_JSON_ORDER}.",
+                [f["file"] for f in kw["json_problem_files"]][:MAX_EXAMPLES],
+            )
+        )
 
     if kw["long_caption"]:
-        issues.append(C.Issue(C.SEV_LOW, "long_caption",
-                              f"{len(kw['long_caption'])} caption(s) exceed {LONG_CAPTION_CHARS} chars.",
-                              "Very long captions may exceed token limits and get truncated."))
+        issues.append(
+            C.Issue(
+                C.SEV_LOW,
+                "long_caption",
+                f"{len(kw['long_caption'])} caption(s) exceed {LONG_CAPTION_CHARS} chars.",
+                "Very long captions may exceed token limits and get truncated.",
+            )
+        )
     return issues
 
 
@@ -375,18 +543,25 @@ def build_markdown(result: dict) -> str:
     t = result["totals"]
     lines.append(f"# Caption check — `{result['root']}`")
     lines.append("")
-    lines.append(f"- Images: **{t['images']}** · captioned **{t['captioned']}** · "
-                 f"missing **{t['missing']}** · empty **{t['empty']}**")
-    lines.append(f"- Unique tags: **{result['tags']['unique']}** "
-                 f"(rare/one-off: {result['tags']['rare_count']})")
+    lines.append(
+        f"- Images: **{t['images']}** · captioned **{t['captioned']}** · "
+        f"missing **{t['missing']}** · empty **{t['empty']}**"
+    )
+    lines.append(
+        f"- Unique tags: **{result['tags']['unique']}** "
+        f"(rare/one-off: {result['tags']['rare_count']})"
+    )
     tr = result["trigger"]
     if tr.get("requested"):
-        lines.append(f"- Trigger `{tr['requested']}`: present in **{tr.get('presence_pct', 0)}%** "
-                     f"(first tag in {tr.get('first_position_pct', 0)}%) — "
-                     f"{'OK' if tr.get('consistent') else 'INCONSISTENT'}")
+        lines.append(
+            f"- Trigger `{tr['requested']}`: present in **{tr.get('presence_pct', 0)}%** — "
+            f"{'OK' if tr.get('consistent') else 'INCONSISTENT'}"
+        )
     elif tr.get("inferred_candidate"):
-        lines.append(f"- Inferred trigger candidate: `{tr['inferred_candidate']}` "
-                     f"(present {tr.get('presence_pct', 0)}%, first {tr.get('first_position_pct', 0)}%)")
+        lines.append(
+            f"- Inferred trigger candidate: `{tr['inferred_candidate']}` "
+            f"(present {tr.get('presence_pct', 0)}%)"
+        )
     if result["tags"]["ubiquitous"]:
         baked = ", ".join(f"{u['tag']} ({u['pct']}%)" for u in result["tags"]["ubiquitous"][:8])
         lines.append(f"- Ubiquitous tags: {baked}")
@@ -396,8 +571,10 @@ def build_markdown(result: dict) -> str:
     if not result["issues"]:
         lines.append("✅ No caption-level issues found.")
     for issue in result["issues"]:
-        lines.append(f"- {C.severity_emoji(issue['severity'])} "
-                     f"**[{issue['severity'].upper()}] {issue['code']}** — {issue['message']}")
+        lines.append(
+            f"- {C.severity_emoji(issue['severity'])} "
+            f"**[{issue['severity'].upper()}] {issue['code']}** — {issue['message']}"
+        )
         if issue["fix"]:
             lines.append(f"  - fix: {issue['fix']}")
     return "\n".join(lines) + "\n"
@@ -411,7 +588,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("path", help="train_data_dir or an image folder")
     parser.add_argument("--trigger", default=None, help="expected trigger word / activation tag")
     parser.add_argument("--no-recursive", action="store_true")
-    parser.add_argument("--no-prefer-json", action="store_true", help="match .txt before .json")
+    parser.add_argument(
+        "--prefer-json",
+        action="store_true",
+        help="accept experimental .json captions instead of requiring trainer-supported .txt",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--output", default=None)
@@ -424,7 +605,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     result = analyze_captions(
         root,
         recursive=not args.no_recursive,
-        prefer_json=not args.no_prefer_json,
+        prefer_json=args.prefer_json,
         trigger=args.trigger,
     )
 

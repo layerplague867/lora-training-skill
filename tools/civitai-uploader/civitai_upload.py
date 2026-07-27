@@ -191,6 +191,12 @@ def advance(pg, names, want_url_part=None, timeout=180):
     return False
 
 
+def abort_upload(ctx, message, code):
+    log(f"ABORT {message}")
+    ctx.close()
+    return code
+
+
 def cmd_login(args):
     with sync_playwright() as p:
         ctx = launch(p, headless=False)
@@ -217,8 +223,20 @@ def cmd_login(args):
 
 
 def cmd_upload(args):
-    cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
-    base = Path(args.config).resolve().parent
+    config_path = Path(args.config).resolve()
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log(f"ABORT invalid config path={config_path} error={exc}")
+        return 2
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("name"), str):
+        log(f"ABORT config must contain string field 'name': {config_path}")
+        return 2
+    if not isinstance(cfg.get("files"), list) or not cfg["files"]:
+        log(f"ABORT config must contain at least one model file: {config_path}")
+        return 2
+
+    base = config_path.parent
     desc = ""
     if cfg.get("description_file"):
         f = (base / cfg["description_file"]).resolve()
@@ -312,12 +330,24 @@ def cmd_upload(args):
         log("  advancing to version...")
         if not advance(page, ["Next"], "wizard?step=2", 60):
             shot("step1_stuck")
-            log("  !! could not advance past step 1 — review screenshot")
+            return abort_upload(ctx, "could not advance past step 1; review screenshot", 4)
         page.wait_for_timeout(2000)
         shot("step2")
 
         # ===== STEP 2: version =====
         log("Step 2: version")
+        if cfg.get("version_name"):
+            try:
+                version_input = page.get_by_label("Version name", exact=False)
+                if version_input.count():
+                    version_input.first.fill(str(cfg["version_name"]))
+                else:
+                    page.locator("#input_versionName,#input_version_name").first.fill(
+                        str(cfg["version_name"])
+                    )
+                log(f"  version name={cfg['version_name']} ✓")
+            except Exception as exc:
+                log(f"  version name MISS error={exc}")
         if cfg.get("base_model"):
             try:
                 page.get_by_label("Base Model", exact=False).first.click()
@@ -338,7 +368,9 @@ def cmd_upload(args):
                     pass
         shot("step2_filled")
         log("  advancing to files...")
-        advance(page, ["Next"], "wizard?step=3", 60)
+        if not advance(page, ["Next"], "wizard?step=3", 60):
+            shot("step2_stuck")
+            return abort_upload(ctx, "could not advance past step 2; review screenshot", 5)
         page.wait_for_timeout(2000)
         shot("step3")
 
@@ -352,17 +384,20 @@ def cmd_upload(args):
             log(f"  uploading {[Path(f).name for f in files]} ...")
         except Exception as e:
             log(f"  file upload MISS {e}")
+            shot("step3_file_input_failed")
+            return abort_upload(ctx, f"model file upload could not start error={e}", 6)
         # wait for the upload to FINISH before advancing (avoids the 'No files uploaded' modal)
         upload_timeout = max(
             600, int(sum(Path(f).stat().st_size for f in files) / 1e6) * 6
         )
-        log(
-            "  upload finished ✓"
-            if wait_upload_done(page, upload_timeout)
-            else "  upload wait timed out"
-        )
+        if not wait_upload_done(page, upload_timeout):
+            shot("step3_upload_timeout")
+            return abort_upload(ctx, f"model upload timed out timeout={upload_timeout}s", 7)
+        log("  upload finished ✓")
         shot("step3_uploading")
-        advance(page, ["Next", "Continue"], "wizard?step=4", 120)
+        if not advance(page, ["Next", "Continue"], "wizard?step=4", 120):
+            shot("step3_stuck")
+            return abort_upload(ctx, "could not advance past step 3; review screenshot", 8)
         page.wait_for_timeout(2500)
         shot("step4")
 
@@ -377,6 +412,8 @@ def cmd_upload(args):
                 page.wait_for_timeout(min(8000 + 1500 * len(images), 60000))
             except Exception as e:
                 log(f"  image upload MISS {e}")
+                shot("step4_image_upload_failed")
+                return abort_upload(ctx, f"sample image upload failed error={e}", 9)
         shot("step4_images")
 
         if args.publish and args.yes:
@@ -384,6 +421,8 @@ def cmd_upload(args):
                 log("PUBLISHED ✓")
             else:
                 log("Publish button not found — left as draft.")
+                shot("publish_failed")
+                return abort_upload(ctx, "publish was requested but did not complete", 10)
             shot("after_publish")
         else:
             log("Left as DRAFT (not published). Review, then click Publish yourself.")

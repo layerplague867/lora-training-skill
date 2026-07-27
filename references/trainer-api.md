@@ -26,7 +26,7 @@ The server (`mikazuki/app/api.py::create_toml_file`) will:
 
 1. fix types + merge `*_custom` arg tables,
 2. pop `model_train_type` (default `sd-lora`) and `gpu_ids`,
-3. apply model-specific defaults (Anima: `unet_lr` 5e-5, bf16, `attn_mode` auto, …),
+3. apply model-specific server defaults (Anima: `unet_lr` 5e-5, bf16, `attn_mode` auto, …),
 4. validate `train_data_dir` exists & has images, and validate the model path,
 5. write `config/autosave/<timestamp>.toml` (+ `-dataset.toml`, `-promopt.txt`),
 6. launch `accelerate launch <trainer> --config_file <toml>` as a background task.
@@ -58,9 +58,9 @@ Minimum useful Anima LoRA body (full key reference: `anima-params.md`):
   "output_dir": "./output/my-anima-lora",
   "max_train_epochs": 10,
   "save_every_n_epochs": 2,
-  "network_dim": 16,
+  "network_dim": 32,
   "network_alpha": 16,
-  "unet_lr": 5e-5,
+  "unet_lr": 2e-5,
   "optimizer_type": "AdamW8bit",
   "mixed_precision": "bf16",
   "gradient_checkpointing": true,
@@ -68,6 +68,10 @@ Minimum useful Anima LoRA body (full key reference: `anima-params.md`):
   // gpu_ids: ["0"]   // optional; sets CUDA_VISIBLE_DEVICES
 }
 ```
+
+The server itself defaults Anima LoRA to rank 16 / `5e-5`; this example deliberately
+overrides it with the Anima model-card starting point, rank 32 / `2e-5`. See
+`presets.md` for complete suite configurations.
 
 **Response** (`mikazuki/process.py::run_train`) — note the ready-made stream URL:
 
@@ -142,7 +146,7 @@ Returns immediately (`"打标任务已提交"`); it runs as a background task. P
 `409`-style busy guard: only one tag/download job at a time
 (`tagger_progress.is_busy()`).
 
-PowerShell example (tag a folder, force the trigger word first):
+PowerShell example for the trainer's generic tagger (prepend an additional tag):
 
 ```powershell
 $body = @{ path = "D:/data/myproject/5_zkz"; additional_tags = "zkz"; threshold = 0.35 } | ConvertTo-Json

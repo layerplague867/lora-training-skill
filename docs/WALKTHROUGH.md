@@ -36,13 +36,14 @@ any stage — bring your own images and start at *Verify*.
 | You want | You need |
 |---|---|
 | Auto-collect images by tag | [DanbooruDownload](https://github.com/storyAura/DanbooruDownload) |
-| Auto-captioning | an sd-image-sorter WD14 service on `:8487` (or the trainer's own `/api/interrogate`) |
+| Auto-captioning | Anima: sd-image-sorter on `:8487`; other bases: the trainer's `/api/interrogate` |
 | Sample-image validation | [ComfyUI](https://github.com/comfyanonymous/ComfyUI) on `:8188` |
 | Publish to Civitai | `tools/civitai-uploader` (Playwright) + a Civitai account |
 | Krea 2 instead of Anima | [musubi-tuner](https://github.com/kohya-ss/musubi-tuner) + 24 GB VRAM |
 
-**What you do *not* need:** a `pip install` for this repo (scripts are stdlib +
-Pillow), a paid API key, or any cloud service. Everything runs locally.
+**What you do *not* need:** a paid API key or any cloud service. Everything runs
+locally. The trainer's bundled Python already includes Pillow; other Python environments
+can install the runtime dependency from `requirements.txt`.
 
 > **Set your paths.** Nothing here auto-detects your machine. Pass paths as flags, or
 > set the env vars each script documents: `DANBOORU_DL_DIR`, `SORTER_URL`,
@@ -71,12 +72,12 @@ are worth more than the images later, for co-occurrence analysis.
 Then curation, which is where quality is actually decided:
 
 ```
-curate.py        → drops multi-character, comic pages, tiny images, corrupt files
+curate.py        → applies the chosen subject profile; drops multi-character, comic, tiny, corrupt files
 build_dataset.py → copies keeps into <repeats>_<concept>/, normalizes to RGB
 ```
 
 **Judgement call the tooling can't make for you:** `curate.py` drops
-`2girls`/`comic` by tag, but it cannot see that 40 of your 150 images are the same
+`2girls`/`comic` by tag, but it cannot prove that 40 of your 150 images are the same
 pose from the same artist. Over-represented near-duplicates teach the model that
 pose, not the character. Open the folder and look.
 
@@ -84,11 +85,11 @@ pose, not the character. Open the folder and look.
 
 | Images | Reality |
 |---|---|
-| < 10 | Possible with a higher LR, but expect a fragile LoRA. |
-| 20–40 | The sweet spot for a character. Diminishing returns after. |
+| < 10 | High-variance result; validate carefully rather than automatically raising LR. |
+| 20–40 | A practical first dataset size, not a universal optimum. |
 | 100+ | Only helps if it adds *variety* — new angles, outfits, lighting. 100 similar images are worse than 30 varied ones. |
 
-Variety beats volume. Every time.
+Variety usually matters more than raw volume.
 
 ## The captioning trap
 
@@ -108,16 +109,17 @@ happily give you a brunette.
 Conversely, caption everything **incidental**: pose, expression, outfit, background,
 camera angle. Those are what you want to change at generation time.
 
-`tag_dataset.py` automates this: WD14 tags every image, puts the trigger first,
-orders sections the way Anima expects, and prunes traits that appear across most of
-the set (they're permanent, so they belong in the trigger).
+`tag_dataset.py` automates the repeatable part: WD14 tags every image, places the
+trigger in Anima's documented section order, and records a frequency-based trait-prune
+decision plus semantic warnings in `<concept>.tag-audit.json`.
 
-**Asymmetric error cost:** wrongly *keeping* a trait tag is a small annoyance — you
-type one extra word forever. Wrongly *removing* a tag that only appears in half the
-images teaches the model to blend two different things into one. When unsure, keep it.
+Frequency is only a heuristic. Review the audit and a representative caption/image
+sample: a common tag may still be intentionally controllable, and an uncommon tag may
+still identify the character. Re-run with a different ratio or `--no-trait-prune`
+when the proposed decision does not match the training goal.
 
-For style LoRAs, invert all of this: you *want* generalization, so caption content
-thoroughly and use no trigger, or a loose one.
+For style LoRAs, invert all of this: caption content thoroughly, strip style/artist
+labels, and use an `@`-prefixed style trigger so the look is bound explicitly.
 
 Full detail: [`references/caption-guide.md`](../references/caption-guide.md).
 
@@ -162,13 +164,14 @@ Common findings and what they actually mean:
 
 | Finding | Why it matters |
 |---|---|
-| `missing_captions` | Uncaptioned images still train — they dump everything into the trigger. Usually not what you want. |
+| `missing_captions` | Images can train without text, weakening or confusing the intended trigger binding. |
 | `exact_duplicates` | Silently multiplies the repeat count for that image, skewing the model. |
-| `trigger_missing` | Your trigger isn't in the captions, so nothing binds to it. The LoRA will do nothing when you use it. |
+| `trigger_inconsistent` | Your trigger is missing from some captions, so identity binding is inconsistent. |
 | `non_rgb_mode` | Palette/CMYK/grayscale images can crash or train oddly. `to-rgb` fixes it. |
 | `tiny_images` | Below training resolution, they add blur, not detail. |
 
-Re-run the doctor after fixing. Iterate to PASS.
+Re-run the doctor after fixing. Continue at PASS, or after you understand and accept
+any remaining WARN findings; the doctor is a structural gate, not a semantic oracle.
 
 ---
 
@@ -177,26 +180,27 @@ Re-run the doctor after fixing. Iterate to PASS.
 > "Train a character LoRA from `D:/data/mychar`."
 
 The agent reads your VRAM via `/api/graphic_cards`, picks a preset, computes repeats
-and epochs toward a **~1500-step budget** (`repeats = clamp(round(150/images), 1, 10)`),
+and epochs toward an initial **~1500-step budget** (`repeats = clamp(round(150/images), 1, 10)`),
 then shows **one confirm card**.
 
 **Read the card.** It's the last gate before the GPU spins up. Check:
 
 - **Trigger word** — is it rare? `mychar` is fine; `girl` is a disaster.
-- **Total steps** — 1000–2000 for a character. Under 500 underfits; over 4000 usually
-  overfits.
+- **Total steps** — the suite starts around 1500 and uses checkpoint validation to
+  decide whether that was too little or too much for this dataset and configuration.
 - **Base model** — must match what you'll generate with. An Anima-trained LoRA used on
   a different base gives mush.
-- **Resolution** — 512 is fast and weak, 768 is the usual answer, 1024 needs VRAM.
+- **Resolution** — the Anima presets use 1024 buckets; lower it only when the selected
+  trainer path and VRAM constraints require that tradeoff.
 - **Output name** — you will have several of these. Version them.
 
 Say `confirm` and it launches, streaming the live log.
 
 ### Save intermediate checkpoints
 
-Set `save_every_n_epochs` so you get snapshots, not just a final file. **The last
-epoch is frequently not the best one** — overfitting is gradual and invisible until
-you compare. Snapshots cost disk; retraining costs an hour.
+Set `save_every_n_epochs` so you get snapshots, not just a final file. The last epoch
+is not automatically the best one; compare checkpoints because overfitting can develop
+gradually. Snapshots cost disk, but they make this comparison possible.
 
 ### Watching the log
 
@@ -215,11 +219,12 @@ you compare. Snapshots cost disk; retraining costs an hour.
 You now have several `.safetensors`. **They are not interchangeable, and the newest is
 not automatically the best.**
 
-> "Generate validation images from every checkpoint in `D:/data/mychar/output`."
+> "Compare an early and final checkpoint from `D:/data/mychar/output`."
 
-`validate.py` renders a sample gallery through ComfyUI. The important detail: **fixed
-seeds across checkpoints.** Same prompt, same seed, different checkpoint — that's the
-only way to see what *training* changed rather than what *noise* changed.
+`validate.py` renders a strength-0 baseline plus one gallery per selected checkpoint
+through ComfyUI. The important detail is **fixed seeds across baseline/checkpoints**.
+Same prompt and seed make the training effect easier to inspect instead of conflating
+it with sampling noise.
 
 What you're looking for:
 
@@ -231,9 +236,9 @@ What you're looking for:
 | Traits need explicit prompting | Trait tags left in captions | Prune them, retrain |
 | Artifacts, melted anatomy | Overtrained or LR too high | Earlier checkpoint, lower LR |
 
-Pick the earliest checkpoint that captures the character well — earlier means more
-flexible. Test at a couple of LoRA weights (0.7, 1.0); one that only works at exactly
-1.0 is over-baked.
+Pick the checkpoint that captures the target while preserving prompt responsiveness;
+do not select by epoch number alone. Test at several LoRA weights (for example 0.7,
+0.9, and 1.1) before concluding that training is too weak or too strong.
 
 ---
 

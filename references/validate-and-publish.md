@@ -1,11 +1,11 @@
 # Validate & publish — from a trained LoRA to a Civitai draft
 
 The back half of `lora-pipeline`, after the doctor gate and training. Front half
-(collect → tag → curate) is in [`collect-and-tag.md`](collect-and-tag.md); training
+(collect → curate → tag → review) is in [`collect-and-tag.md`](collect-and-tag.md); training
 itself is `lora-trainer` + [`trainer-api.md`](trainer-api.md).
 
-All tools here are local + **environment-specific** (paths/ports are this machine's
-defaults; override via the flags/env vars noted).
+All tools here are local. Paths and ports are configurable through the flags and
+environment variables noted below.
 
 ---
 
@@ -19,12 +19,14 @@ Before publishing, prove the character is consistent. Driver:
 2. Generate a small gallery:
 
 ```
-python validate.py --work "D:/work/mychar" --lora mychar-anima-v1.safetensors --trigger mychar
+python validate.py --work "D:/work/mychar" \
+    --lora mych4r-000006.safetensors mych4r-000010.safetensors \
+    --trigger mych4r --target character --subject-tag 1girl
 ```
 
-Writes portrait / scene / full-body shots to `<work>/validation/`. These double as the
-**Civitai sample images** (Phase 7 copies them in — Civitai reads their embedded
-prompts).
+Writes a strength-0 baseline plus one portrait / scene / full-body gallery per checkpoint
+under `<work>/validation/<checkpoint>/`. Style validation uses female, male, and landscape
+subjects via `--target style`. Phase 7 copies only the gallery matching the selected LoRA.
 
 **The verified Anima generation graph** (what `validate.py` POSTs to `/prompt`):
 
@@ -34,12 +36,14 @@ prompts).
 | `CLIPLoader` | `qwen_3_06b_base.safetensors`, type `stable_diffusion` |
 | `VAELoader` | `qwen_image_vae.safetensors` |
 | `LoraLoader` | your `<name>.safetensors`, strength 0.9 model+clip |
-| `KSampler` | `dpmpp_2m_sde_gpu` / `beta57`, cfg 4.4, steps 32, 896×1152 |
-| positive | `masterpiece, best quality, newest, highres, 1girl, <trigger>, <scene…>` |
+| `KSampler` | `dpmpp_2m_sde_gpu` / `beta57`, cfg 4.4, steps 32, portrait + landscape sizes |
+| positive | `masterpiece, best quality, score_7, safe, <trigger>, <target-specific scene>` |
 
-**Reading the gallery:** consistent identity across all shots = good → publish. Same
-pose / stiff face / training images leaking = overfit → re-run with an earlier epoch
-snapshot. Weak/absent identity = raise `--strength` (0.9 → 1.1) or add training epochs.
+**Reading the gallery:** compare the same seeds against baseline and across checkpoints.
+The target should become clear while pose, subject, framing, and background still follow
+the prompt. Fixed pose / stiff face / training-image leakage means overfit; weak identity
+should be checked at weights 0.8–1.1 before adding epochs. This is a repeatable visual
+evaluation, not an automatic quality score.
 
 Only ComfyUI is needed here; start it **after** training frees the GPU.
 
@@ -49,7 +53,7 @@ Only ComfyUI is needed here; start it **after** training frees the GPU.
 
 Civitai has **no upload API** — the reusable **civitai-uploader** tool drives a
 logged-in Chromium through the 4-step publish wizard. It lives at
-`<repo>\tools\civitai-uploader\` (own README + `.venv`).
+`<repo>\tools\civitai-uploader\` (run the one-time setup in its README first).
 
 ### 7a. Package (this repo)
 

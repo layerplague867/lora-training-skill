@@ -11,10 +11,10 @@ All contracts are verified against a real end-to-end run of a character Anima Lo
 
 ### Added
 
-- **New skill `lora-pipeline/`** — a 7-phase end-to-end conductor (collect → tag →
-  curate/build → doctor gate → train → validate → package/publish) that delegates
-  training to `lora-trainer` and quality to `dataset-doctor`, and enforces two human
-  gates: the training confirm card, and **never auto-publishing** (stops at Draft).
+- **New skill `lora-pipeline/`** — a 7-phase end-to-end conductor (collect →
+  curate/build → tag → doctor gate → train → validate → package/publish) that delegates
+  training to `lora-trainer` and quality to `dataset-doctor`, with explicit approval for
+  dataset repairs and training plus **no automatic publishing** (stops at Draft).
 - **`lora-pipeline/scripts/`** — six stdlib+Pillow drivers generalized from that
   run: `collect.py` (Danbooru, 2-tag-safe), `curate.py` (drop multi/comic/tiny/corrupt),
   `build_dataset.py` (keeps → `<repeats>_<concept>/`, RGB-normalize, auto-repeats),
@@ -22,16 +22,16 @@ All contracts are verified against a real end-to-end run of a character Anima Lo
   (ComfyUI Anima+LoRA sample gallery), `make_civitai_pack.py` (model card +
   `*.civitai.json` + samples for the civitai-uploader).
 - **Anima tagging craft** (not a naive WD14 dump) — `tag_dataset.py` and
-  `caption-guide.md` now encode the rules verified in the sd-image-sorter tagger audit:
-  the asymmetric error cost (missing tags tolerated, wrong tags harmful → prefer a clean
-  tagger over max recall); **section ordering** via the sorter's `content_mode="template"`
+  `caption-guide.md` encode rules grounded in the Anima model card, WD model cards, and
+  the sd-image-sorter API contract: precision-oriented captions; **section ordering**
+  via the sorter's `content_mode="template"`
   + `preset_id="anima"` (model-card order, `@artist`, `safe/sensitive/nsfw/explicit`
   safety vocab with `questionable→nsfw`, single-line) instead of a confidence-ordered
   dump; the **caption-paradox trait prune** for character LoRAs (blacklist invariant
   hair/eye/body traits at ratio ≥0.9 so the trigger absorbs identity, keeping transient
-  states — a *reviewed*, printed prune) via `/api/tags/trait-candidates`, inverted for
-  style LoRAs; tagger selection (`wd-eva02-large`/`wd-swinv2` best, `pixai` consensus-only,
-  `toriigate` captioner-only) and per-model thresholds; `--consensus` / `--nl` opt-ins.
+  states — a deterministic, reviewable heuristic recorded in the audit file) via
+  `/api/tags/trait-candidates`, inverted for style LoRAs; documented tagger selection and
+  per-model thresholds; `--consensus` / `--nl` opt-ins.
 - **`references/collect-and-tag.md`** — DanbooruDownload contract (the 2-tag anonymous
   limit) + the code-verified sd-image-sorter HTTP API (scan → selection-token → tag →
   trait-candidates → `template`/`anima` export) with the field-by-field rationale.
@@ -39,9 +39,9 @@ All contracts are verified against a real end-to-end run of a character Anima Lo
   (UNET/CLIP/VAE + LoRA, dpmpp_2m_sde_gpu/beta57) and the civitai-uploader 4-step-wizard
   contract, including the trigger-word "+ Create" commit gotcha and the async
   file-upload wait — plus the hard rule that publishing is always the user's click.
-- **`caption-guide.md`** — a new **"Anima tagging craft"** section (asymmetric error
-  cost, section-vs-confidence order, safety-vocab mapping, per-image quality, the
-  3-level caption-paradox prune, tagger shootout, per-model thresholds, kaomoji /
+- **`caption-guide.md`** — a new **"Anima tagging craft"** section (precision-oriented
+  tagging, section-vs-confidence order, safety-vocab mapping, per-image quality, the
+  3-level caption-paradox prune, model-card metrics, per-model thresholds, kaomoji /
   implication traps) plus the **official recommended quality tags** note
   (`masterpiece, best quality`) distinguished from negative-prompt artefacts.
 

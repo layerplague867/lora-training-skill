@@ -19,21 +19,20 @@
       驗證方法：放一張只有 `.json` 標註的圖開訓，在 log 裡核對 caption 是否為空。
       確認後更新 `caption-guide.md` 的「unverified」標註（坐實或移除）
 
-**為什麼重要**: `/api/run` 的參數是照 trainer 自己的 schema 推出來的，實跑驗證過主路徑，
-但 caption sidecar 這類邊角 flag 仍是文檔假設，未逐一坐實。
+**為什麼重要**: `.json` 仍未驗證，所以 doctor 預設只把 `.txt` 視為可訓練 caption；驗證成功前不改此預設。
 
 ### 2. 發布準備
 - [x] 新增 LICENSE 文件（MIT）
-- [ ] 將 GitHub 倉庫設為公開
-- [ ] 建立 Git tag
+- [x] 將 GitHub 倉庫設為公開
+- [ ] 建立目前版本的 Git tag
 - [ ] 發布 GitHub Release（附上 CHANGELOG）
 
 ## 中優先級
 
 ### 3. 持續整合
-- [ ] 新增 GitHub Actions workflow
-- [ ] 自動執行 30 個單元測試
-- [ ] Python 版本矩陣: 3.9, 3.10, 3.11, 3.12
+- [x] 新增 GitHub Actions workflow
+- [x] 自動執行 dataset-doctor、pipeline 與 skill package 測試
+- [x] Python 版本矩陣: 3.10, 3.11, 3.12, 3.13
 - [ ] 測試失敗時阻止合併
 
 ### 4. 第三個 Skill: lora-tester（部分由 v0.3.0 `lora-pipeline` 覆蓋）
@@ -52,13 +51,8 @@
 ## 低優先級
 
 ### 6. 開發體驗改進
-- [ ] 新增 `.gitattributes` 處理 CRLF 警告
-  ```
-  *.py text eol=lf
-  *.md text eol=lf
-  *.json text eol=lf
-  ```
-- [ ] 新增 pre-commit hooks（black, ruff, tests）
+- [x] 新增 `.gitattributes` 處理 CRLF 警告
+- [ ] 新增 pre-commit hooks（Ruff、tests）
 - [ ] 改進測試覆蓋率報告
 
 ## 文檔改進

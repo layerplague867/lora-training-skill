@@ -18,16 +18,19 @@ neutral, style-descriptive names.
 
 ## Running the tests
 
-Pure stdlib `unittest` — no test framework to install:
+Install the contributor dependencies, then run all three `unittest` suites:
 
 ```powershell
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -v
 python -m unittest discover -s dataset-doctor/tests -v
+python -m unittest discover -s lora-pipeline/tests -v
 ```
 
-31 tests, all offline, no GPU. They must pass before a PR.
+The tests are offline and need no GPU. They must pass before a PR.
 
-The scripts need Python 3.10+ and Pillow. The trainer's bundled
-`python_embeded\python.exe` has both already.
+Runtime scripts need Python 3.10+ and Pillow. Package validation also uses PyYAML;
+`requirements-dev.txt` installs all contributor dependencies.
 
 ## Code conventions
 

@@ -23,9 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_DL_DIR = os.environ.get(
-    "DANBOORU_DL_DIR", r"C:\tools\DanbooruDownload"
-)
+DEFAULT_DL_DIR = os.environ.get("DANBOORU_DL_DIR", r"C:\tools\DanbooruDownload")
 
 
 def build_yaml(tag: str, save_dir: Path, limit: int) -> str:
@@ -51,17 +49,13 @@ def find_python(dl_dir: Path) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="Download a concept image set from Danbooru."
-    )
+    ap = argparse.ArgumentParser(description="Download a concept image set from Danbooru.")
     ap.add_argument(
         "--tag",
         required=True,
         help="single danbooru character tag, e.g. my_character_(my_series)",
     )
-    ap.add_argument(
-        "--work", required=True, help="project work dir; images land in <work>/raw/"
-    )
+    ap.add_argument("--work", required=True, help="project work dir; images land in <work>/raw/")
     ap.add_argument("--limit", type=int, default=200, help="max posts (default 200)")
     ap.add_argument(
         "--downloader-dir", default=DEFAULT_DL_DIR, help="path to DanbooruDownload repo"
@@ -82,9 +76,7 @@ def main() -> int:
         )
         return 2
 
-    raw.mkdir(parents=True, exist_ok=True)
     cfg_path = work / "download.yaml"
-    cfg_path.write_text(build_yaml(a.tag, raw, a.limit), encoding="utf-8")
     py = find_python(dl_dir)
     cmd = [py, "main.py", "--config", str(cfg_path)]
 
@@ -98,15 +90,11 @@ def main() -> int:
         print("re-run with --apply to download.")
         return 0
 
+    raw.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(build_yaml(a.tag, raw, a.limit), encoding="utf-8")
     print("\nrunning download...")
-    proc = subprocess.run(cmd, cwd=str(dl_dir))
-    n = len(
-        [
-            p
-            for p in raw.iterdir()
-            if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-        ]
-    )
+    proc = subprocess.run(cmd, cwd=str(dl_dir), check=False)
+    n = len([p for p in raw.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}])
     print(f"\ndownload exit={proc.returncode} | images now in raw/: {n}")
     return proc.returncode
 

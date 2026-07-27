@@ -1,0 +1,4 @@
+interface:
+  display_name: "LoRA Dataset Doctor"
+  short_description: "Audit and repair LoRA datasets before training"
+  default_prompt: "Use $dataset-doctor to audit this LoRA dataset and propose safe fixes."

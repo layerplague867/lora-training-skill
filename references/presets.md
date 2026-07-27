@@ -9,7 +9,7 @@ Placeholders to fill every time:
 
 - `<TRAIN_DATA_DIR>` — parent folder of `<repeats>_<concept>` (forward slashes)
 - `<OUTPUT_NAME>` — LoRA file name, e.g. `zkz-anima-v1`
-- `<TRIGGER>` — activation tag (also pass to the WD14 tagger `additional_tags`)
+- `<TRIGGER>` — activation tag (for Anima, pass it to `tag_dataset.py --trigger`)
 - model paths only if yours differ from the defaults below
 
 ---
@@ -39,11 +39,11 @@ max_train_epochs = 10
 train_batch_size = 1
 
 network_module = "networks.lora_anima"
-network_dim = 16
+network_dim = 32
 network_alpha = 16
 network_train_unet_only = true
 
-unet_lr = 5e-5
+unet_lr = 2e-5
 text_encoder_lr = 1e-5
 lr_scheduler = "cosine_with_restarts"
 lr_scheduler_num_cycles = 1
@@ -55,9 +55,8 @@ gradient_checkpointing = true
 cache_latents = true
 cache_text_encoder_outputs = true
 caption_extension = ".txt"
-prefer_json_caption = true
 shuffle_caption = false
-keep_tokens = 1            # protect the leading <TRIGGER> if you shuffle later
+keep_tokens = 0            # unused while shuffle_caption=false; preserve the full prefix if enabling it
 seed = 1337
 clip_skip = 2
 max_data_loader_n_workers = 0   # Windows-friendly
@@ -95,7 +94,7 @@ network_dim = 32
 network_alpha = 16
 network_train_unet_only = true
 
-unet_lr = 5e-5
+unet_lr = 2e-5
 text_encoder_lr = 1e-5
 lr_scheduler = "cosine_with_restarts"
 lr_scheduler_num_cycles = 1
@@ -106,9 +105,8 @@ gradient_checkpointing = true
 cache_latents = true
 cache_text_encoder_outputs = true
 caption_extension = ".txt"
-prefer_json_caption = true
 shuffle_caption = false
-keep_tokens = 0            # style LoRAs usually have no single trigger
+keep_tokens = 0            # unused while shuffle_caption=false; preserve the full prefix if enabling it
 seed = 1337
 clip_skip = 2
 max_data_loader_n_workers = 0
@@ -148,7 +146,7 @@ network_dim = 16
 network_alpha = 16
 network_train_unet_only = true
 
-unet_lr = 5e-5
+unet_lr = 2e-5
 text_encoder_lr = 1e-5
 lr_scheduler = "cosine_with_restarts"
 lr_scheduler_num_cycles = 1
@@ -162,9 +160,8 @@ cache_latents_to_disk = true
 cache_text_encoder_outputs = true
 cache_text_encoder_outputs_to_disk = true
 caption_extension = ".txt"
-prefer_json_caption = true
 shuffle_caption = false
-keep_tokens = 1
+keep_tokens = 0
 seed = 1337
 clip_skip = 2
 max_data_loader_n_workers = 0
@@ -175,12 +172,11 @@ enable_preview = false
 
 ### Notes
 
-- These set `unet_lr=5e-5` explicitly (the server would rewrite the legacy `1e-4`
-  default to this anyway for Anima).
-- `prefer_json_caption = true` is kept only for parity with the trainer UI's own
-  autosaved configs — it is **UI-only in v2.7.0** (no code reads `.json`
-  sidecars), so captions must be single-line `.txt` regardless
-  (`caption-guide.md`).
+- Standard LoRA presets use the Anima author's rank-32, `unet_lr=2e-5` starting point.
+  The low-VRAM LoKr preset keeps rank 16 but uses the same conservative LR. These are
+  starting configurations, not benchmark-proven optima for every dataset.
+- Do not send `prefer_json_caption`; it is UI-only in v2.7.0. Captions must be
+  single-line `.txt` (`caption-guide.md`).
 - For an **8 GB** card add `blocks_to_swap = 24` to preset 3.
 - To get training previews, set `enable_preview = true` and add the
   `positive_prompts` / `sample_*` keys from `anima-params.md`.

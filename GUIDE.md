@@ -15,14 +15,15 @@ A hands-on guide for two audiences:
 1. **Install the trainer**: grab `SD-Trainer-vX.Y.Z.7z` from
    [lora-scripts-next releases](https://github.com/wochenlong/lora-scripts-next/releases),
    extract anywhere, run `run_gui.bat`. The backend serves `http://127.0.0.1:28000`.
-2. **Install the skills**: drop this whole repo into your agent's skills folder
+2. **Install the skills**: place `lora-pipeline/`, `lora-trainer/`,
+   `dataset-doctor/`, and `references/` directly inside your agent's skills folder
    (see [Using outside Claude Code](#5-using-outside-claude-code) for per-agent paths).
-   Keep `lora-trainer/`, `dataset-doctor/`, `references/` together — they
-   cross-reference by relative path.
+   Keep them as siblings because they cross-reference by relative path.
 3. **Python**: the doctor/fixer scripts need any Python 3.10+ with Pillow. The
    trainer's own `python_embeded\python.exe` works with zero setup.
 
-That's it. No pip installs, and the checking tools never touch the GPU.
+With the trainer's bundled Python, no additional pip install is needed, and the checking
+tools never touch the GPU. Other Python environments need Pillow.
 
 ## 2. For users
 
@@ -38,12 +39,12 @@ The agent will then, in order — asking you before anything changes on disk:
 2. Propose a **trigger word** (e.g. `mych4r`) — a rare token that will summon your
    character at generation time. You can swap it on the confirm card.
 3. Organize loose images into the `<repeats>_<concept>` folder the trainer expects.
-4. Auto-caption untagged images with the built-in WD14 tagger.
+4. Auto-caption Anima datasets with the shared sd-image-sorter pipeline, then review
+   its non-blocking semantic/trait audit.
 5. Run **dataset-doctor** and fix what it finds (duplicates, broken files, caption
    problems) — every fix is shown as a plan first, and removed files go to
    `_quarantine/`, never deleted.
-6. Pick repeats/epochs automatically (≈1500 training steps) and a preset that fits
-   your VRAM.
+6. Pick an initial repeats/epochs budget (about 1500 steps) and a preset that fits VRAM.
 7. Show **one confirm card**. Nothing trains until you say so.
 
 Other useful prompts:
@@ -52,8 +53,8 @@ Other useful prompts:
 |---|---|
 | "Check my dataset at `<path>` before training" | Doctor report only — PASS / WARN / FAIL + fixes |
 | "Fix the duplicates / captions in `<path>`" | Dry-run plan → your OK → applied |
-| "Tag these images, trigger is `zkz`" | WD14 auto-captioning via the trainer |
-| "Train a **style** LoRA from `<path>`" | Style path: bigger rank, no trigger required |
+| "Tag these images, trigger is `zkz`" | Anima-sectioned WD14 captions + audit |
+| "Train a **style** LoRA from `<path>`" | Style path: rank 32 and an `@style` trigger |
 | "Train on SDXL / SD1.5 / Flux" | Same flow, different base model |
 | "Use dim 32, lr 1e-4, 20 epochs" | Expert path — your numbers, still gated + confirmed |
 
@@ -64,7 +65,7 @@ If you don't even have images yet, use **`lora-pipeline`** and give it a *name*:
 > **"Make me a LoRA of `my_character_(my_series)` on Anima — collect, tag, train, and
 > upload to Civitai; I'll click Publish."**
 
-It runs seven phases — collect (Danbooru) → tag (WD14) → curate & build the dataset →
+It runs seven phases — collect (Danbooru) → curate & build → tag + semantic review →
 dataset-doctor gate → train (the confirm card still appears here) → validate a sample
 gallery (ComfyUI) → package and fill the Civitai upload wizard — and **stops at a Draft**.
 You review it and click Publish; it never publishes for you. Details and the exact tool
@@ -76,10 +77,10 @@ contracts: `lora-pipeline/SKILL.md`, `references/collect-and-tag.md`,
 ```
 📋 Training confirm card
 - What:    character LoRA "zkz" · trigger: zkz   ← the word you'll type in prompts
-- Data:    32 images × 5 repeats × 10 epochs = 1600 steps   ← sweet spot ≈1000–2500
+- Data:    32 images × 5 repeats × 10 epochs = 1600 steps   ← initial budget
 - GPU:     RTX 4070 12GB → low-VRAM preset (LoKr)
 - Output:  ./output/zkz-anima-v1/ · a snapshot every 2 epochs
-- Model:   Anima (dim16/alpha16 · bf16 · unet_lr 5e-5)
+- Model:   Anima (dim32/alpha16 · bf16 · unet_lr 2e-5)
 Reply "confirm" to start, or say what to change.
 ```
 
@@ -130,7 +131,7 @@ If you are an LLM agent executing these skills, these rules are **non-negotiable
    `--apply`. Never hand-roll `rm`/`del` — the fixer quarantines instead of deleting.
 4. **Don't ask what the API can tell you.** VRAM → `GET /api/graphic_cards`;
    trainer alive → `GET /api/version`. The only question a beginner should face is
-   "character or style?"
+   "character or style?" Character runs also need `1girl`, `1boy`, or `1other`.
 5. **Re-run the doctor after fixing**, until PASS (or a user-accepted WARN).
 
 ### Quick-path pipeline (exact steps)
@@ -138,22 +139,23 @@ If you are an LLM agent executing these skills, these rules are **non-negotiable
 ```
 0  GET /api/version            → trainer alive?  GET /api/graphic_cards → VRAM
 1  inputs: image folder (required) · goal: character|style (ask only if unsaid)
-   derive: trigger (from concept name; leetify common words: mychar → mych4r)
+   character count: 1girl|1boy|1other · derive trigger (mychar → mych4r)
            output_name = <concept>-anima-v1
 2  prepare data (each: dry-run → confirm once → --apply):
      loose images?    fix_dataset.py organize <dir> --repeats R --concept <name>
-     no captions?     POST /api/interrogate {path, additional_tags: trigger}
-                      poll GET /api/tagger/status until done
+     no captions?     Anima: tag_dataset.py --dataset-dir <concept-dir> --trigger T
+                              --subject-tag <count>  (style: --style and @trigger)
+                       other bases: POST /api/interrogate
      doctor.py <dir> --trigger T --epochs N --json   → fix per table below → re-check
 3  params: repeats = clamp(round(150 / images), 1, 10)
-           epochs  = 10 (character) | 12 (style)     → total_steps ≈ 1500
+           epochs  = 10 (character) | 12 (style)     → initial total_steps ≈ 1500
            preset  = #1 char / #2 style (≥16GB) | #3 LoKr+blocks_to_swap (≤12GB)
 4  confirm card → wait for explicit "confirm"
 5  POST /api/run (flat JSON body from references/presets.md)
    check resp.status == "success" → keep data.task_id
 6  poll GET /api/train/log/tail/{task_id}?limit=240
    watch: loss=nan → bf16/optimizer · OOM → ckpt/blocks_to_swap/resolution
-7  report output_dir snapshots + "try the last one first" guidance
+7  compare early/final checkpoints with a strength-0 baseline at fixed seeds
 ```
 
 ### Issue code → fix command
@@ -170,8 +172,8 @@ after user confirmation. Quarantined files go to `<dataset>/_quarantine/`.
 | `non_rgb_mode` | `fix_dataset.py to-rgb <dir>` |
 | `trigger_inconsistent` | `fix_dataset.py add-trigger <dir> --trigger <T>` |
 | `artifact_tags` / `duplicate_tags` | `fix_dataset.py strip-tags <dir> [--tags "a,b"]` |
-| `multiline_caption` | No auto-fix — merge each caption into ONE line (the trainer reads only line 1); format: `trigger, tags. natural language` |
-| `missing_captions` / `empty_captions` | WD14: `POST /api/interrogate` with `additional_tags=<T>` |
+| `multiline_caption` | No auto-fix — merge each caption into ONE line (the trainer reads only line 1); preserve Anima section order and use `. ` before natural language |
+| `missing_captions` / `empty_captions` | Anima: `tag_dataset.py`; other bases: `/api/interrogate` |
 | `below_target_resolution` / `tiny_images` | No auto-fix — needs better source images |
 
 ### API quick reference
@@ -228,8 +230,8 @@ These skills follow the open **Agent Skills** convention (`SKILL.md` with `name`
 
 Two rules apply everywhere:
 
-1. **Keep the repo intact.** `lora-trainer/`, `dataset-doctor/`, and `references/`
-   must remain sibling folders — the SKILL.md files use `../references/…` paths.
+1. **Keep the suite intact.** `lora-pipeline/`, `lora-trainer/`, `dataset-doctor/`,
+   and `references/` must remain sibling folders — the SKILL.md files use relative paths.
 2. **The agent needs shell + HTTP.** Any agent that can run a command line and make
    local HTTP requests can execute the full flow. For agents with *no* skill support
    at all, just say: *"Read `lora-trainer/SKILL.md` and follow it."* — the skills are
@@ -255,13 +257,13 @@ Two rules apply everywhere:
 
 1. **装训练器**:从 [lora-scripts-next releases](https://github.com/wochenlong/lora-scripts-next/releases)
    下载 `SD-Trainer-vX.Y.Z.7z`,解压,运行 `run_gui.bat`。后端跑在 `http://127.0.0.1:28000`。
-2. **装技能**:把整个仓库放进你的 agent 的技能目录(各 agent 路径见
-   [在 Claude Code 之外使用](#5-在-claude-code-之外使用))。`lora-trainer/`、
-   `dataset-doctor/`、`references/` 三个文件夹**必须放在一起**——它们用相对路径互相引用。
+2. **装技能**:把仓库中的 `lora-pipeline/`、`lora-trainer/`、`dataset-doctor/`、
+   `references/` 直接放进 agent 的技能根目录(各 agent 路径见
+   [在 Claude Code 之外使用](#5-在-claude-code-之外使用))。四者必须同级——它们用相对路径互相引用。
 3. **Python**:体检/修复脚本只需要任意 Python 3.10+ 加 Pillow。直接用训练器自带的
    `python_embeded\python.exe`,零配置。
 
-就这些。不用 pip 装包,检查工具也不占 GPU。
+使用训练器自带的 Python 时无需额外 pip 安装,检查工具也不占 GPU。其他 Python 环境需要 Pillow。
 
 ## 2. 用户篇
 
@@ -276,10 +278,10 @@ agent 会按顺序做下面的事——**动你文件之前一定先问你**:
 1. 确认训练器在跑、自动读显卡显存(不会问你显存多大)。
 2. 提议一个**触发词**(如 `mych4r`)——生成时用来召唤角色的稀有 token,确认卡上可改。
 3. 把散图整理成训练器要求的 `<重复次数>_<概念名>` 文件夹结构。
-4. 没打标的图用内置 WD14 自动打标。
+4. Anima 数据统一用 sd-image-sorter 生成分段 WD14 caption,再复查语义/特征审计。
 5. 跑 **dataset-doctor** 体检并修复发现的问题(重复图、坏图、标注问题)——每个修复
    先展示计划,移走的文件进 `_quarantine/`,**绝不删除**。
-6. 自动算 repeats/epochs(约 1500 步)、按显存选配置。
+6. 自动给 repeats/epochs 首轮预算(约 1500 步)、按显存选配置。
 7. 给你**一张确认卡**。你不点头,不开训。
 
 其他常用说法:
@@ -288,8 +290,8 @@ agent 会按顺序做下面的事——**动你文件之前一定先问你**:
 |---|---|
 | 「训练前帮我检查 `<路径>` 的数据集」 | 只出体检报告——PASS / WARN / FAIL + 修复建议 |
 | 「把 `<路径>` 里的重复图/标注修一下」 | dry-run 计划 → 你确认 → 执行 |
-| 「给这些图打标,触发词是 `zkz`」 | 走训练器的 WD14 自动打标 |
-| 「练一个**画风** LoRA」 | 画风路线:rank 更大、不强制触发词 |
+| 「给这些图打标,触发词是 `zkz`」 | Anima 分段 WD14 caption + 审计 |
+| 「练一个**画风** LoRA」 | 画风路线:rank 32、使用 `@画风` trigger |
 | 「用 SDXL / SD1.5 / Flux 练」 | 同样流程,换底模 |
 | 「dim 32、lr 1e-4、20 epochs」 | 进阶路线——按你的数,但照样过体检 + 确认 |
 
@@ -300,7 +302,7 @@ agent 会按顺序做下面的事——**动你文件之前一定先问你**:
 > **「用 Anima 帮我做一个 `my_character_(my_series)` 的 LoRA——收图、打标、训练、传 Civitai,
 > 我只点发布。」**
 
-它会跑七个阶段——收图(Danbooru)→ 打标(WD14)→ 精修并建库 → dataset-doctor 闸门 →
+它会跑七个阶段——收图(Danbooru)→ 精修建库 → 打标与语义复查 → dataset-doctor 闸门 →
 训练(这里仍会出确认卡)→ 验证样图(ComfyUI)→ 打包并填 Civitai 上传向导——然后**停在
 Draft(草稿)**。你看过再点 Publish,它绝不替你发布。细节与工具契约见
 `lora-pipeline/SKILL.md`、`references/collect-and-tag.md`、`references/validate-and-publish.md`。
@@ -310,10 +312,10 @@ Draft(草稿)**。你看过再点 Publish,它绝不替你发布。细节与工�
 ```
 📋 训练确认卡
 - 练什么:角色 LoRA「zkz」 · 触发词: zkz   ← 以后写提示词要用的词
-- 数据:  32 张图 × 5 重复 × 10 轮 = 1600 步   ← 甜蜜区间 ≈1000–2500
+- 数据:  32 张图 × 5 重复 × 10 轮 = 1600 步   ← 首轮预算
 - 显卡:  RTX 4070 12GB → 省显存配置(LoKr)
 - 输出:  ./output/zkz-anima-v1/ · 每 2 轮存一个快照
-- 模型:  Anima(dim16/alpha16 · bf16 · unet_lr 5e-5)
+- 模型:  Anima(dim32/alpha16 · bf16 · unet_lr 2e-5)
 回复「确认」开训;想改哪项直接说。
 ```
 
@@ -364,22 +366,23 @@ TensorBoard 在 `:6006`,监控面板在 `:6008`。
 ```
 0  GET /api/version            → 训练器活着?  GET /api/graphic_cards → 显存
 1  输入:图片文件夹(必需) · 目标:角色|画风(用户没说才问)
-   推导:触发词(从概念名生成,常见词做变体:mychar → mych4r)
+   角色还需 1girl|1boy|1other · 推导触发词(mychar → mych4r)
          output_name = <概念名>-anima-v1
 2  准备数据(每步:dry-run → 确认一次 → --apply):
      散图?       fix_dataset.py organize <dir> --repeats R --concept <名>
-     没标注?     POST /api/interrogate {path, additional_tags: 触发词}
-                  轮询 GET /api/tagger/status 至完成
+     没标注?     Anima:tag_dataset.py --dataset-dir <concept-dir> --trigger T
+                       --subject-tag <count>(画风传 --style 和 @trigger)
+                   其他底模:POST /api/interrogate
      doctor.py <dir> --trigger T --epochs N --json  → 按下表修 → 重检
 3  选参:repeats = clamp(round(150 / 图片数), 1, 10)
-         epochs  = 10(角色)| 12(画风)      → 总步数 ≈ 1500
+         epochs  = 10(角色)| 12(画风)      → 首轮总步数 ≈ 1500
          preset  = ①角色 / ②画风(≥16GB)| ③LoKr+blocks_to_swap(≤12GB)
 4  确认卡 → 等用户明确「确认」
 5  POST /api/run(flat JSON,模板见 references/presets.md)
    检查 resp.status == "success" → 记下 data.task_id
 6  轮询 GET /api/train/log/tail/{task_id}?limit=240
    盯:loss=nan → bf16/换优化器 · OOM → ckpt/blocks_to_swap/降分辨率
-7  报告 output_dir 快照 + 「先试最后一个」的指引
+7  固定 seed 对比 strength-0 baseline、早期和最终快照
 ```
 
 ### issue code → 修复命令
@@ -396,8 +399,8 @@ TensorBoard 在 `:6006`,监控面板在 `:6008`。
 | `non_rgb_mode` | `fix_dataset.py to-rgb <dir>` |
 | `trigger_inconsistent` | `fix_dataset.py add-trigger <dir> --trigger <T>` |
 | `artifact_tags` / `duplicate_tags` | `fix_dataset.py strip-tags <dir> [--tags "a,b"]` |
-| `multiline_caption` | 无自动修复——把每个 caption 合并成**单行**（训练端只读第一行）；格式：`trigger, tags. 自然语言` |
-| `missing_captions` / `empty_captions` | WD14:`POST /api/interrogate` 带 `additional_tags=<T>` |
+| `multiline_caption` | 无自动修复——把每个 caption 合并成**单行**（训练端只读第一行）；保留 Anima 分段顺序，并用 `. ` 接自然语言 |
+| `missing_captions` / `empty_captions` | Anima:`tag_dataset.py`;其他底模:`/api/interrogate` |
 | `below_target_resolution` / `tiny_images` | 无自动修复——需要更高分辨率的源图 |
 
 ### API 速查
@@ -454,7 +457,7 @@ TensorBoard 在 `:6006`,监控面板在 `:6008`。
 
 两条通用规则:
 
-1. **仓库保持完整。** `lora-trainer/`、`dataset-doctor/`、`references/` 必须是同级
+1. **仓库保持完整。** `lora-pipeline/`、`lora-trainer/`、`dataset-doctor/`、`references/` 必须是同级
    文件夹——SKILL.md 里用的是 `../references/…` 相对路径。
 2. **agent 需要 shell + HTTP 能力。** 只要能跑命令行、能发本地 HTTP 请求,就能执行
    完整流程。完全不支持 skills 的 agent 也行——直接告诉它:

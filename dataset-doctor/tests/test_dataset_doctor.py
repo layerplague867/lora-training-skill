@@ -64,8 +64,7 @@ class DatasetDoctorTests(unittest.TestCase):
         for i in range(6):
             img_path = concept / f"img{i:02d}.png"
             _patterned_image(i).save(img_path)
-            _write_caption(img_path.with_suffix(".txt"),
-                           f"zkz, 1girl, solo, long hair, tag{i}")
+            _write_caption(img_path.with_suffix(".txt"), f"zkz, 1girl, solo, long hair, tag{i}")
 
         # Exact duplicate of img00 (byte-identical copy) + its caption.
         shutil.copy(concept / "img00.png", concept / "dup_exact.png")
@@ -94,8 +93,9 @@ class DatasetDoctorTests(unittest.TestCase):
 
         # Multi-line caption: the trainer only reads line 1, so line 2 is lost.
         _patterned_image(54).save(concept / "multiline.png")
-        _write_caption(concept / "multiline.txt",
-                       "zkz, 1girl, solo, long hair\nA girl stands by the window.")
+        _write_caption(
+            concept / "multiline.txt", "zkz, 1girl, solo, long hair\nA girl stands by the window."
+        )
 
         cls.concept = concept
 
@@ -172,10 +172,51 @@ class DatasetDoctorTests(unittest.TestCase):
             ["zkz", "1girl", "solo"],
         )
 
+    def test_natural_language_suffix_is_not_counted_as_tags(self):
+        with tempfile.TemporaryDirectory(prefix="dd-caption-") as temporary_dir:
+            caption = Path(temporary_dir) / "sample.txt"
+            caption.write_text(
+                "masterpiece, safe, 1girl, zkz, solo. A person stands by the window, smiling.",
+                encoding="utf-8",
+            )
+
+            info = check_captions.load_caption(caption)
+
+            self.assertEqual(info["tags"], ["masterpiece", "safe", "1girl", "zkz", "solo"])
+
+    def test_trigger_inference_uses_sectioned_concept_folder(self):
+        with tempfile.TemporaryDirectory(prefix="dd-trigger-") as temporary_dir:
+            concept = Path(temporary_dir) / "5_mych4r"
+            concept.mkdir()
+            for index in range(2):
+                image = concept / f"img{index}.png"
+                Image.new("RGB", (64, 64), "white").save(image)
+                image.with_suffix(".txt").write_text(
+                    "masterpiece, safe, 1girl, mych4r, solo",
+                    encoding="utf-8",
+                )
+
+            result = check_captions.analyze_captions(concept)
+
+            self.assertEqual(result["trigger"]["inferred_candidate"], "mych4r")
+            self.assertEqual(result["trigger"]["inference_source"], "concept_folder")
+
     def test_trigger_consistency(self):
         res = check_captions.analyze_captions(self.tmp, trigger="zkz")
         self.assertTrue(res["trigger"]["consistent"])
         self.assertGreaterEqual(res["trigger"]["presence_pct"], 90.0)
+
+    def test_valid_quality_labels_are_not_artifacts(self):
+        caption = self.concept / "img_00.txt"
+        caption.write_text(
+            "normal quality, 1girl, zkz, solo",
+            encoding="utf-8",
+        )
+
+        res = check_captions.analyze_captions(self.tmp, trigger="zkz")
+
+        codes = {issue["code"] for issue in res["issues"]}
+        self.assertNotIn("artifact_tags", codes)
 
     def test_trigger_inference_when_none_given(self):
         res = check_captions.analyze_captions(self.tmp)
@@ -205,29 +246,71 @@ class DatasetDoctorTests(unittest.TestCase):
     # --- doctor ----------------------------------------------------------
 
     def test_verdict_fail_on_corrupt(self):
-        scan_res = {"issues": [{"severity": C.SEV_CRITICAL, "code": "corrupt_images", "fix": "x"}],
-                    "totals": {}, "effective_steps": {}}
+        scan_res = {
+            "issues": [{"severity": C.SEV_CRITICAL, "code": "corrupt_images", "fix": "x"}],
+            "totals": {},
+            "effective_steps": {},
+        }
         cap_res = {"issues": [], "totals": {}}
         v = doctor.compute_verdict(scan_res, cap_res)
         self.assertEqual(v["verdict"], doctor.VERDICT_FAIL)
 
     def test_verdict_warn_on_medium(self):
-        scan_res = {"issues": [{"severity": C.SEV_MEDIUM, "code": "exact_duplicates", "fix": "dedupe"}],
-                    "totals": {}, "effective_steps": {}}
+        scan_res = {
+            "issues": [{"severity": C.SEV_MEDIUM, "code": "exact_duplicates", "fix": "dedupe"}],
+            "totals": {},
+            "effective_steps": {},
+        }
         cap_res = {"issues": [], "totals": {}}
         v = doctor.compute_verdict(scan_res, cap_res)
         self.assertEqual(v["verdict"], doctor.VERDICT_WARN)
         self.assertEqual(v["recommendations"][0]["action"], "dedupe")
 
     def test_verdict_pass_when_clean(self):
-        v = doctor.compute_verdict({"issues": [], "totals": {}, "effective_steps": {}},
-                                   {"issues": [], "totals": {}})
+        v = doctor.compute_verdict(
+            {"issues": [], "totals": {}, "effective_steps": {}}, {"issues": [], "totals": {}}
+        )
         self.assertEqual(v["verdict"], doctor.VERDICT_PASS)
 
     def test_run_doctor_emits_json_serialisable(self):
         res = doctor.run_doctor(self.tmp, trigger="zkz", epochs=10, target_reso=(512, 512))
         json.dumps(res)  # must not raise
-        self.assertIn(res["verdict"], (doctor.VERDICT_PASS, doctor.VERDICT_WARN, doctor.VERDICT_FAIL))
+        self.assertIn(
+            res["verdict"], (doctor.VERDICT_PASS, doctor.VERDICT_WARN, doctor.VERDICT_FAIL)
+        )
+
+    def test_doctor_requires_txt_caption_by_default(self):
+        with tempfile.TemporaryDirectory(prefix="dd-json-") as temporary_dir:
+            root = Path(temporary_dir)
+            concept = root / "1_json"
+            concept.mkdir()
+            image = concept / "image.png"
+            _patterned_image(80, size=1024).save(image)
+            image.with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "character": "json-trigger",
+                        "tags": ["1girl", "solo", "portrait", "outdoors"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            default_result = doctor.run_doctor(
+                root,
+                trigger="json-trigger",
+                target_reso=(1024, 1024),
+            )
+            json_result = doctor.run_doctor(
+                root,
+                prefer_json=True,
+                trigger="json-trigger",
+                target_reso=(1024, 1024),
+            )
+
+            self.assertEqual(default_result["summary"]["missing_captions"], 1)
+            self.assertEqual(default_result["verdict"], doctor.VERDICT_WARN)
+            self.assertEqual(json_result["summary"]["missing_captions"], 0)
 
 
 if __name__ == "__main__":

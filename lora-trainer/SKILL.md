@@ -1,6 +1,6 @@
 ---
 name: lora-trainer
-description: Train a LoRA / LoKr / T-LoRA on the lora-scripts-next (SD-Trainer) trainer, Anima-first — even from just a bare folder of images. Use when the user wants to train / 训练 / 炼 a LoRA, start a training run, pick training parameters, choose repeats/epochs, or launch training for a character / style / concept on Anima (or SD1.5 / SDXL / Flux). Quick path needs only an image folder: it auto-organizes the dataset, auto-tags with WD14, gates on a dataset-doctor check with one-command fixes, auto-picks repeats/epochs/preset from image count and detected VRAM, and — only after the user confirms one plain-language card — launches via the mikazuki HTTP API and monitors the live training log.
+description: "Prepare and launch LoRA, LoKr, or T-LoRA training through lora-scripts-next (SD-Trainer), Anima-first. Use when the user asks to train a character, style, or concept LoRA, choose parameters or repeats and epochs, start a run, or monitor training on Anima, SD1.5, SDXL, or Flux. Organize and caption the dataset, run dataset-doctor, choose a documented starting preset from image count and VRAM, show one confirmation card, then call the mikazuki API and monitor its log."
 ---
 
 # lora-trainer — LoRA 训练编排入口
@@ -19,7 +19,7 @@ description: Train a LoRA / LoKr / T-LoRA on the lora-scripts-next (SD-Trainer) 
 2. **参数知识可借用**：`anima-params.md` / `presets.md` 的键就是 kohya sd-scripts 词汇（`network_dim`、`unet_lr`、repeats/epochs 步数预算）。可以据此给参数建议，或替用户生成一份 kohya 风格 TOML / 命令行，让他们在自己的训练器里手动跑。
 3. **不自动开训**：明确告知「自动开训只支持 SD-Trainer」，给两条路——装 SD-Trainer（见 README），或拿第 2 点生成的配置自己跑。
 
-`/api/version` 连不上 ≠ 中止一切：数据整理、体检、修复全部离线可做；只有 WD14 打标和开训需要 trainer 在线。
+`/api/version` 连不上 ≠ 中止一切：数据整理、体检、修复全部离线可做；开训需要 trainer 在线，打标则按底模需要已配置的 sd-image-sorter 或 trainer 端点。
 
 ## 两条路径
 
@@ -32,7 +32,7 @@ description: Train a LoRA / LoKr / T-LoRA on the lora-scripts-next (SD-Trainer) 
 
 **0. 连 trainer、读显卡。** `GET /api/version` 确认在跑（连不上 → 让用户启动 `run_gui.bat`，可建议在输入框输入 `! run_gui.bat` 直接在会话里运行）。再 `GET /api/graphic_cards` 自动读显存——**不要问用户显存多大**。
 
-**1. 收集最少输入。** 必需：图片文件夹路径。再确认一件事：练**角色/概念**还是**画风**（用户没说才问，这是唯一要问的问题）。其余自动推：
+**1. 收集最少输入。** 必需：图片文件夹路径、练**单角色/概念**还是**画风**。单角色再明确 `1girl` / `1boy` / `1other`;画风 trigger 必须用 `@` 前缀。其余自动推：
 
 - **trigger**（角色/概念才需要）：从概念/文件夹名生成候选——小写、去空格；若是常见词，做数字变体避免撞概念（`mychar` → `mych4r`）。写进确认卡让用户改。
 - **output_name** = `<concept>-anima-v1`；版本号冲突就 +1。
@@ -40,12 +40,12 @@ description: Train a LoRA / LoKr / T-LoRA on the lora-scripts-next (SD-Trainer) 
 **2. 自动准备数据。** 每步先跑 dry-run 把计划摊给用户，**确认一次后**加 `--apply` 执行（fixer 不删文件，原件进 `_quarantine/`）：
 
 - 散图、没有 `<repeats>_<concept>` 结构 → `fix_dataset.py organize --repeats <R> --concept <name>`（R 见第 3 步）。
-- 没 caption → WD14 打标：`POST /api/interrogate`（`additional_tags=<TRIGGER>`），轮询 `GET /api/tagger/status` 至完成。
-- 跑 `doctor.py --trigger <T> --epochs <N>` 体检：FAIL/WARN 的每个 issue code 都有对应的一行修复命令（见 `../dataset-doctor/SKILL.md` 修复手册）。把要做的修复**一次列全、统一确认**，再逐条执行，修完重检到 PASS。
+- 没 caption且目标是 Anima → 调 `../lora-pipeline/scripts/tag_dataset.py --dataset-dir <concept-dir> --trigger <T> --subject-tag <count>`;画风传 `--style`。快速通道与完整 pipeline 必须使用同一套分段 caption、模型阈值和语义审查。其他底模才用 `POST /api/interrogate`。
+- 跑 `doctor.py --trigger <T> --epochs <N>` 体检：FAIL/WARN 的每个 issue code 都有对应建议（见 `../dataset-doctor/SKILL.md` 修复手册）。把要做的修复**一次列全、统一确认**，再逐条执行；重检到 PASS，或让用户明确接受剩余 WARN。
 
 **3. 自动选参。** 不要让用户做数学：
 
-- `repeats = clamp(round(150 / 图片数), 1, 10)`，`epochs = 10`（画风 12）→ 总步数 ≈ 1500，落在 1000–2500 区间即可。
+- `repeats = clamp(round(150 / 图片数), 1, 10)`，`epochs = 10`（画风 12）→ 约 1500 步仅作首轮预算。doctor 去重后重算实际步数，并通过固定 seed 快照比较决定是否早停。
 - preset（`../references/presets.md`）：显存 ≥16GB → preset 1（角色）/ 2（画风）；≤12GB → preset 3（LoKr + `blocks_to_swap=16`；8GB 改 24）。
 
 **4. 确认卡（强制）。** 用人话摊牌，等用户回「确认」：
@@ -56,7 +56,7 @@ description: Train a LoRA / LoKr / T-LoRA on the lora-scripts-next (SD-Trainer) 
 - 数据：32 张图 × 5 重复 × 10 轮 = 1600 步
 - 显卡：RTX 4070 12GB → 用省显存配置（LoKr）
 - 输出：./output/zkz-anima-v1/，每 2 轮存一个文件
-- 底模：Anima（dim16/alpha16 · bf16 · unet_lr 5e-5）
+- 底模：Anima（dim32/alpha16 · bf16 · unet_lr 2e-5）
 回复「确认」开训；想改哪一项直接说。
 ```
 
@@ -72,10 +72,10 @@ description: Train a LoRA / LoKr / T-LoRA on the lora-scripts-next (SD-Trainer) 
 
 ```
 steps_per_epoch = ceil(effective_images / train_batch_size)
-total_steps     = steps_per_epoch × max_train_epochs   # 角色目标 ~1000–2500
+total_steps     = steps_per_epoch × max_train_epochs   # 角色首轮检查区间约 1000–2500
 ```
 
-偏离区间就调 repeats/epochs。Anima 关键默认（`anima-params.md`）：`unet_lr=5e-5`、`mixed_precision=bf16`、`gradient_checkpointing=true`、`attn_mode` 留空自动、Windows `max_data_loader_n_workers=0`。caption 一律用**单行 `.txt`**（`trigger, tags. 自然语言`，见 `../references/caption-guide.md`）；`prefer_json_caption` 是 UI 透传项、v2.7.0 训练端未发现实现，别指望 `.json` 被读取。
+偏离区间就调 repeats/epochs。Anima 官方起点是 rank 32、`unet_lr=2e-5`;训练器服务端默认 `5e-5` 不是官方推荐。其余关键项：`mixed_precision=bf16`、`gradient_checkpointing=true`、`attn_mode` 留空自动、Windows `max_data_loader_n_workers=0`。caption 一律用单行 `.txt`;不要发送无效的 `prefer_json_caption`。
 
 **4. 摊牌 + 确认（强制）。** 列出关键项（模型类型、底模、`train_data_dir`、`network_dim/alpha`、`unet_lr`、epochs、`total_steps`、`output_dir`、显存预估），**明确征得同意**再开训。
 
@@ -86,8 +86,8 @@ total_steps     = steps_per_epoch × max_train_epochs   # 角色目标 ~1000–2
 ## 训练完成后（别漏这步）
 
 1. 产物在 `output_dir` 下：按 `save_every_n_epochs` 会有多个 epoch 快照（`<name>-000002.safetensors` …）+ 最终档。
-2. **怎么挑**：先试**最后一个**；如果过拟合（脸僵、姿势单一、出图全像训练图）→ 往前换更早的快照逐个试。
-3. 复制到生成端（ComfyUI: `models/loras/`），用 **trigger word** 出几张图验证；角色一致性不够 → 提高 LoRA 权重或加练 epochs，画风污染太重 → 降权重或用更早快照。
+2. **怎么挑**：复制至少一个早期和最终快照到 ComfyUI，用 `validate.py` 在相同 seed 下与 strength 0 baseline 比较。选择能表达目标、同时仍响应姿势/主体/背景变化的快照。
+3. 身份弱时先比较权重 0.8–1.1，再决定是否加练；僵脸、固定姿势或内容污染时用更早快照。
 
 ## 模型与适配器分支
 
@@ -113,8 +113,8 @@ total_steps     = steps_per_epoch × max_train_epochs   # 角色目标 ~1000–2
 3. 已跑 `dataset-doctor`；FAIL 没放行，WARN 已让用户确认。
 4. 所有 `fix_dataset.py` 修复都先 dry-run、经用户确认才 `--apply`；没有手写删除/改写命令。
 5. `model_train_type` 与底模 / `network_module` 一致（Anima=`networks.lora_anima`，LoKr=`lycoris.kohya`，T-LoRA=`networks.tlora_anima`）。
-6. 角色训练 trigger 一致率达标；`keep_tokens≥1` 保护首位 trigger（若开 shuffle）；`cache_text_encoder_outputs=true` 时 `shuffle_caption=false`。
-7. 估算了 `total_steps` 且在 ~1000–2500（快速通道用自动公式）。
+6. 角色训练 trigger 一致率达标；默认 `cache_text_encoder_outputs=true`、`shuffle_caption=false`。若显式开启 shuffle，必须用足够的 `keep_tokens` 或 `keep_tokens_separator` 保留完整固定前缀，而不是假设 trigger 在首位。
+7. 估算了 `total_steps`；~1000–2500 只作首轮检查区间，偏离时已说明依据而非硬拦截。
 8. **已出确认卡并取得开训确认**；未确认不 POST。
 9. Anima 用 `bf16`；`Automagic`/`CAME` 会被服务端强制 bf16。
 
@@ -124,8 +124,8 @@ total_steps     = steps_per_epoch × max_train_epochs   # 角色目标 ~1000–2
 
 1. `/api/version` OK；`/api/graphic_cards` → 4070 12GB。
 2. 唯一一问：已说是角色 → 不再问。trigger 候选 `mych4r`（mychar 是常见词，做数字变体）。
-3. 准备数据：`fix_dataset.py organize "D:/data/mychar" --repeats 5 --concept mych4r`（dry-run 摊牌 → 确认 → `--apply`）→ WD14 打标（`additional_tags=mych4r`）→ `doctor.py --trigger mych4r --epochs 10` → PASS。
-4. 自动选参：30 张 → repeats=5、epochs=10 → 1500 步；12GB → preset 3。
+3. 准备数据：`fix_dataset.py organize "D:/data/mychar" --repeats 5 --concept mych4r`（dry-run 摊牌 → 确认 → `--apply`）→ `tag_dataset.py --dataset-dir ... --trigger mych4r --subject-tag 1girl` → 复查语义审查 → `doctor.py --trigger mych4r --epochs 10` → PASS 或剩余 WARN 已接受。
+4. 自动选参：30 张 → repeats=5、epochs=10 → 约 1500 步首轮预算；12GB → preset 3。
 5. 确认卡 → 用户回「确认」→ `POST /api/run` → 监看 → 报告 `./output/mych4r-anima-v1/*.safetensors`，并提示先试最后一个快照。
 
 ## 执行交接

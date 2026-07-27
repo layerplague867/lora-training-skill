@@ -13,7 +13,7 @@ Exit code: 0 for PASS/WARN, 2 for FAIL, so a hook or wrapper can gate on it.
 
 Usage:
     python doctor.py <path> [--trigger zkz] [--epochs 10] [--batch-size 1]
-                     [--target-reso 1024,1024] [--no-prefer-json]
+                     [--target-reso 1024,1024] [--prefer-json]
                      [--no-recursive] [--json] [--report] [--output FILE]
 """
 
@@ -75,7 +75,9 @@ def compute_verdict(scan_result: dict, caption_result: dict) -> dict:
             "issue_counts": counts,
             "total_issues": len(merged),
             "images": scan_result.get("totals", {}).get("images", 0),
-            "effective_images": scan_result.get("effective_steps", {}).get("total_effective_images", 0),
+            "effective_images": scan_result.get("effective_steps", {}).get(
+                "total_effective_images", 0
+            ),
             "total_steps": scan_result.get("effective_steps", {}).get("total_steps"),
             "missing_captions": caption_result.get("totals", {}).get("missing", 0),
         },
@@ -87,18 +89,25 @@ def compute_verdict(scan_result: dict, caption_result: dict) -> dict:
 def run_doctor(
     root: Path,
     recursive: bool = True,
-    prefer_json: bool = True,
+    prefer_json: bool = False,
     trigger: Optional[str] = None,
     epochs: Optional[int] = None,
     batch_size: int = 1,
     target_reso: tuple[int, int] = (1024, 1024),
 ) -> dict:
     scan_result = scan_dataset.analyze_dataset(
-        root, recursive=recursive, epochs=epochs, batch_size=batch_size,
-        target_reso=target_reso, prefer_json=prefer_json,
+        root,
+        recursive=recursive,
+        epochs=epochs,
+        batch_size=batch_size,
+        target_reso=target_reso,
+        prefer_json=prefer_json,
     )
     caption_result = check_captions.analyze_captions(
-        root, recursive=recursive, prefer_json=prefer_json, trigger=trigger,
+        root,
+        recursive=recursive,
+        prefer_json=prefer_json,
+        trigger=trigger,
     )
     verdict = compute_verdict(scan_result, caption_result)
     return {
@@ -115,9 +124,12 @@ def run_doctor(
 def build_markdown(result: dict) -> str:
     badge = {VERDICT_PASS: "✅ PASS", VERDICT_WARN: "⚠️ WARN", VERDICT_FAIL: "⛔ FAIL"}
     s = result["summary"]
-    lines = [f"# Dataset Doctor — {badge.get(result['verdict'], result['verdict'])}",
-             "",
-             f"`{result['root']}`", ""]
+    lines = [
+        f"# Dataset Doctor — {badge.get(result['verdict'], result['verdict'])}",
+        "",
+        f"`{result['root']}`",
+        "",
+    ]
     counts = s["issue_counts"]
     lines.append(
         f"- Images: **{s['images']}** · effective: **{s['effective_images']}**"
@@ -132,7 +144,9 @@ def build_markdown(result: dict) -> str:
     if not result["recommendations"]:
         lines.append("Nothing to fix — dataset looks ready. 🎉")
     for i, rec in enumerate(result["recommendations"], 1):
-        lines.append(f"{i}. {C.severity_emoji(rec['severity'])} **{rec['code']}** — {rec['action']}")
+        lines.append(
+            f"{i}. {C.severity_emoji(rec['severity'])} **{rec['code']}** — {rec['action']}"
+        )
 
     lines.append("")
     lines.append("---")
@@ -144,13 +158,19 @@ def build_markdown(result: dict) -> str:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Dataset readiness gate for LoRA training.")
-    parser.add_argument("path", help="train_data_dir (parent of <repeats>_<concept>) or an image folder")
+    parser.add_argument(
+        "path", help="train_data_dir (parent of <repeats>_<concept>) or an image folder"
+    )
     parser.add_argument("--trigger", default=None, help="expected trigger word / activation tag")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--target-reso", default="1024,1024", help="WxH, e.g. 1024,1024")
     parser.add_argument("--no-recursive", action="store_true")
-    parser.add_argument("--no-prefer-json", action="store_true")
+    parser.add_argument(
+        "--prefer-json",
+        action="store_true",
+        help="accept experimental .json captions instead of requiring trainer-supported .txt",
+    )
     parser.add_argument("--json", action="store_true", help="print combined JSON only")
     parser.add_argument("--report", action="store_true", help="print markdown only")
     parser.add_argument("--output", default=None, help="write combined JSON to this file")
@@ -163,7 +183,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     result = run_doctor(
         root,
         recursive=not args.no_recursive,
-        prefer_json=not args.no_prefer_json,
+        prefer_json=args.prefer_json,
         trigger=args.trigger,
         epochs=args.epochs,
         batch_size=args.batch_size,

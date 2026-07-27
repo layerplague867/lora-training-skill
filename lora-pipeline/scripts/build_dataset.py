@@ -26,30 +26,113 @@ def pick_repeats(n_keep: int) -> int:
     return max(1, min(10, round(150 / n_keep)))
 
 
+def validate_concept_name(concept: str) -> str:
+    normalized = concept.strip()
+    if not normalized:
+        raise ValueError("concept must not be empty")
+    if normalized in {".", ".."} or any(char in normalized for char in "/\\:*?[]"):
+        raise ValueError(
+            f"concept must be a single directory name without /, \\, :, *, ?, [, or ]: {concept!r}"
+        )
+    return normalized
+
+
 def to_rgb_png(src: Path, dst: Path) -> None:
-    with Image.open(src) as im:
-        if im.mode in ("RGBA", "LA", "P"):
-            im = im.convert("RGBA")
-            bg = Image.new("RGB", im.size, (255, 255, 255))
-            bg.paste(im, mask=im.split()[-1])
-            im = bg
+    with Image.open(src) as source_image:
+        if source_image.mode in ("RGBA", "LA", "P"):
+            rgba = source_image.convert("RGBA")
+            background = Image.new("RGB", rgba.size, (255, 255, 255))
+            background.paste(rgba, mask=rgba.split()[-1])
+            converted = background
         else:
-            im = im.convert("RGB")
-        im.save(dst, "PNG")
+            converted = source_image.convert("RGB")
+        converted.save(dst, "PNG")
+
+
+def load_keep_records(manifest: Path) -> list[dict[str, str]]:
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    keep = data.get("keep") if isinstance(data, dict) else None
+    if not isinstance(keep, list):
+        raise ValueError(f"manifest field 'keep' must be a list: {manifest}")
+
+    records: list[dict[str, str]] = []
+    for index, record in enumerate(keep):
+        if not isinstance(record, dict):
+            raise ValueError(f"manifest keep[{index}] must be an object: {manifest}")
+        filename = record.get("file")
+        mode = record.get("mode")
+        if not isinstance(filename, str) or not filename or Path(filename).name != filename:
+            raise ValueError(f"manifest keep[{index}].file must be a filename: {filename!r}")
+        if not isinstance(mode, str) or not mode:
+            raise ValueError(f"manifest keep[{index}].mode must be a non-empty string")
+        records.append({"file": filename, "mode": mode})
+    return records
+
+
+def build_dataset(work: Path, concept: str, repeats: int) -> dict[str, int | str]:
+    if repeats < 1:
+        raise ValueError("repeats must be >= 1")
+    normalized_concept = validate_concept_name(concept)
+
+    raw = work / "raw"
+    manifest = work / "curation_manifest.json"
+    if not manifest.is_file():
+        raise FileNotFoundError(f"curation manifest not found: {manifest}")
+    records = load_keep_records(manifest)
+    sources = [raw / record["file"] for record in records]
+    missing = [source for source in sources if not source.is_file()]
+    if missing:
+        names = ", ".join(str(path) for path in missing)
+        raise FileNotFoundError(f"manifest source image(s) not found: {names}")
+
+    dataset_dir = work / "dataset"
+    concept_name = f"{repeats}_{normalized_concept}"
+    concept_dir = dataset_dir / concept_name
+    staging_dir = dataset_dir / f".{concept_name}.tmp"
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+    staging_dir.mkdir(parents=True)
+
+    copied = 0
+    converted = 0
+    try:
+        for record, source in zip(records, sources, strict=True):
+            if record["mode"] == "RGB":
+                shutil.copy2(source, staging_dir / record["file"])
+                copied += 1
+            else:
+                destination = staging_dir / f"{Path(record['file']).stem}.png"
+                to_rgb_png(source, destination)
+                converted += 1
+
+        if concept_dir.exists():
+            shutil.rmtree(concept_dir)
+        staging_dir.replace(concept_dir)
+        for stale_dir in dataset_dir.glob(f"*_{normalized_concept}"):
+            if stale_dir != concept_dir and stale_dir.is_dir():
+                shutil.rmtree(stale_dir)
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+    return {
+        "concept_dir": str(concept_dir),
+        "repeats": repeats,
+        "keeps": len(records),
+        "copied": copied,
+        "converted": converted,
+        "images": copied + converted,
+    }
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="Build the kohya concept folder from curated keeps."
-    )
+    ap = argparse.ArgumentParser(description="Build the kohya concept folder from curated keeps.")
     ap.add_argument(
         "--work",
         required=True,
         help="project dir (has raw/ and curation_manifest.json)",
     )
-    ap.add_argument(
-        "--concept", required=True, help="concept/trigger folder name, e.g. mychar"
-    )
+    ap.add_argument("--concept", required=True, help="concept/trigger folder name, e.g. mychar")
     ap.add_argument(
         "--repeats",
         type=int,
@@ -59,35 +142,23 @@ def main() -> int:
     a = ap.parse_args()
 
     work = Path(a.work).resolve()
-    raw = work / "raw"
     manifest = work / "curation_manifest.json"
     if not manifest.exists():
         print(f"ERROR: {manifest} missing — run curate.py first.")
         return 2
 
-    keep = json.loads(manifest.read_text(encoding="utf-8"))["keep"]
-    repeats = a.repeats or pick_repeats(len(keep))
-    concept_dir = work / "dataset" / f"{repeats}_{a.concept}"
-    concept_dir.mkdir(parents=True, exist_ok=True)
-
-    copied = converted = 0
-    for rec in keep:
-        src = raw / rec["file"]
-        if not src.exists():
-            continue
-        if rec["mode"] == "RGB":
-            shutil.copy2(src, concept_dir / rec["file"])
-            copied += 1
-        else:
-            to_rgb_png(src, concept_dir / f"{Path(rec['file']).stem}.png")
-            converted += 1
-
-    n = len(list(concept_dir.glob("*.*")))
-    print(f"concept folder : {concept_dir}")
-    print(f"repeats        : {repeats}  (keeps={len(keep)})")
-    print(f"copied RGB     : {copied}   converted->RGB png: {converted}   total: {n}")
+    keep_count = len(load_keep_records(manifest))
+    repeats = a.repeats or pick_repeats(keep_count)
+    result = build_dataset(work, a.concept, repeats)
+    print(f"concept folder : {result['concept_dir']}")
+    print(f"repeats        : {result['repeats']}  (keeps={result['keeps']})")
     print(
-        f'\nnext: tag_dataset.py --work "{work}" --concept {a.concept} --trigger <TRIGGER>'
+        f"copied RGB     : {result['copied']}   converted->RGB png: "
+        f"{result['converted']}   total: {result['images']}"
+    )
+    print(
+        f'\nnext: tag_dataset.py --dataset-dir "{result["concept_dir"]}" '
+        "--trigger <TRIGGER> --subject-tag <1girl|1boy|1other>"
     )
     return 0
 

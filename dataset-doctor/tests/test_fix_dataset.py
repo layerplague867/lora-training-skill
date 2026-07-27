@@ -87,6 +87,23 @@ class FixDatasetTestCase(unittest.TestCase):
         self.assertTrue((nested / "keep.png").exists())
         self.assertTrue((self.tmp / "5_zkz" / "loose.png").exists())
 
+    def test_organize_keeps_sidecars_paired_when_name_collides(self):
+        concept = self.tmp / "5_zkz"
+        concept.mkdir()
+        _img(1).save(concept / "same.png")
+        _img(2).save(self.tmp / "same.png")
+        (self.tmp / "same.txt").write_text("zkz, second image", encoding="utf-8")
+
+        F.cmd_organize(self.tmp, repeats=5, concept="zkz", apply=True)
+
+        self.assertTrue((concept / "same.png").exists())
+        self.assertFalse((concept / "same.txt").exists())
+        self.assertTrue((concept / "same_1.png").exists())
+        self.assertEqual(
+            (concept / "same_1.txt").read_text(encoding="utf-8"),
+            "zkz, second image",
+        )
+
     # --- quarantine-corrupt -------------------------------------------------
 
     def test_quarantine_corrupt_moves_bad_files_aside(self):
@@ -129,6 +146,22 @@ class FixDatasetTestCase(unittest.TestCase):
         self.assertEqual(result["quarantined_images"], 1)
         self.assertEqual(len(C.iter_images(self.tmp)), 1)
 
+    def test_dedupe_near_merges_overlapping_exact_group(self):
+        original = self.tmp / "original.png"
+        exact = self.tmp / "exact.png"
+        near = self.tmp / "near.png"
+        _img(1).save(original)
+        shutil.copy2(original, exact)
+        tweaked = _img(1)
+        tweaked.putpixel((0, 0), (1, 2, 3))
+        tweaked.save(near)
+
+        result = F.cmd_dedupe(self.tmp, near=True, apply=True)
+
+        self.assertEqual(result["duplicate_groups"], 1)
+        self.assertEqual(result["quarantined_images"], 2)
+        self.assertEqual(len(C.iter_images(self.tmp)), 1)
+
     # --- to-rgb ---------------------------------------------------------------
 
     def test_to_rgb_converts_and_backs_up(self):
@@ -144,7 +177,7 @@ class FixDatasetTestCase(unittest.TestCase):
 
     # --- add-trigger ------------------------------------------------------------
 
-    def test_add_trigger_txt_moves_to_front(self):
+    def test_add_trigger_txt_preserves_existing_section_position(self):
         _img(1).save(self.tmp / "a.png")
         (self.tmp / "a.txt").write_text("1girl, solo, zkz", encoding="utf-8")
         _img(2).save(self.tmp / "b.png")
@@ -152,11 +185,24 @@ class FixDatasetTestCase(unittest.TestCase):
 
         result = F.cmd_add_trigger(self.tmp, trigger="zkz", apply=True)
 
+        self.assertEqual(result["rewritten_captions"], 0)
+        self.assertEqual((self.tmp / "a.txt").read_text(encoding="utf-8"), "1girl, solo, zkz")
+        self.assertEqual((self.tmp / "b.txt").read_text(encoding="utf-8"), "zkz, 1girl")
+
+    def test_add_trigger_txt_inserts_after_metadata_and_preserves_prose(self):
+        _img(1).save(self.tmp / "a.png")
+        (self.tmp / "a.txt").write_text(
+            "best quality, safe, 1girl, solo, outdoors. A person stands near a lake.",
+            encoding="utf-8",
+        )
+
+        result = F.cmd_add_trigger(self.tmp, trigger="zkz", apply=True)
+
         self.assertEqual(result["rewritten_captions"], 1)
-        self.assertEqual((self.tmp / "a.txt").read_text(encoding="utf-8"),
-                         "zkz, 1girl, solo")
-        self.assertEqual((self.tmp / "b.txt").read_text(encoding="utf-8"),
-                         "zkz, 1girl")
+        self.assertEqual(
+            (self.tmp / "a.txt").read_text(encoding="utf-8"),
+            "best quality, safe, 1girl, zkz, solo, outdoors. A person stands near a lake.",
+        )
 
     def test_add_trigger_json_sets_character_in_order(self):
         _img(1).save(self.tmp / "a.png")
@@ -180,12 +226,30 @@ class FixDatasetTestCase(unittest.TestCase):
     def test_strip_tags_removes_artifacts_and_duplicates(self):
         _img(1).save(self.tmp / "a.png")
         (self.tmp / "a.txt").write_text(
-            "zkz, watermark, 1girl, zkz, worst quality", encoding="utf-8")
+            "zkz, watermark, 1girl, zkz, worst quality", encoding="utf-8"
+        )
 
         result = F.cmd_strip_tags(self.tmp, extra_tags="", apply=True)
 
         self.assertEqual(result["rewritten_captions"], 1)
-        self.assertEqual((self.tmp / "a.txt").read_text(encoding="utf-8"), "zkz, 1girl")
+        self.assertEqual(
+            (self.tmp / "a.txt").read_text(encoding="utf-8"),
+            "zkz, 1girl, worst quality",
+        )
+
+    def test_strip_tags_preserves_natural_language_suffix(self):
+        _img(1).save(self.tmp / "a.png")
+        (self.tmp / "a.txt").write_text(
+            "safe, 1girl, zkz, watermark, outdoors. A girl stands by a lake, smiling.",
+            encoding="utf-8",
+        )
+
+        F.cmd_strip_tags(self.tmp, extra_tags="", apply=True)
+
+        self.assertEqual(
+            (self.tmp / "a.txt").read_text(encoding="utf-8"),
+            "safe, 1girl, zkz, outdoors. A girl stands by a lake, smiling.",
+        )
 
     def test_strip_tags_extra_and_json_lists(self):
         _img(1).save(self.tmp / "a.png")

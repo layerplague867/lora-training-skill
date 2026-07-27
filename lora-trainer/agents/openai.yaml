@@ -1,0 +1,4 @@
+interface:
+  display_name: "LoRA Trainer"
+  short_description: "Prepare and launch LoRA training with SD-Trainer"
+  default_prompt: "Use $lora-trainer to prepare this dataset and launch a confirmed SD-Trainer run."

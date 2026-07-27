@@ -18,8 +18,8 @@ Commands (issue code they fix):
     dedupe              exact_duplicates     keep the best copy per duplicate group
                         near_duplicates      (with --near)
     to-rgb              non_rgb_mode         convert RGBA/P/CMYK images to RGB
-    add-trigger         trigger_inconsistent make the trigger the first tag everywhere
-    strip-tags          artifact_tags        remove negative/quality + unwanted tags
+    add-trigger         trigger_inconsistent ensure the trigger exists in every caption
+    strip-tags          artifact_tags        remove source-noise + unwanted tags
                         duplicate_tags       (also de-duplicates tags per caption)
 
 Usage:
@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -48,6 +49,28 @@ import check_captions as CC  # noqa: E402
 import scan_dataset  # noqa: E402
 
 MAX_PRINT = 20  # cap per-action lines shown on the console
+ANIMA_PREFIX_TAGS: frozenset[str] = frozenset(
+    {
+        "masterpiece",
+        "best quality",
+        "good quality",
+        "normal quality",
+        "low quality",
+        "worst quality",
+        "newest",
+        "recent",
+        "mid",
+        "early",
+        "old",
+        "highres",
+        "absurdres",
+        "safe",
+        "sensitive",
+        "nsfw",
+        "explicit",
+    }
+)
+ANIMA_COUNT_PATTERN = re.compile(r"^\d+(?:girl|boy|other)s?$")
 
 
 # --- Action plan model ---------------------------------------------------------
@@ -65,8 +88,9 @@ class Action:
         return {"kind": self.kind, "path": self.path, "detail": self.detail}
 
 
-def _result(command: str, root: Path, apply: bool, actions: list[Action],
-            extra: Optional[dict] = None) -> dict:
+def _result(
+    command: str, root: Path, apply: bool, actions: list[Action], extra: Optional[dict] = None
+) -> dict:
     out = {
         "tool": "fix_dataset",
         "command": command,
@@ -101,13 +125,13 @@ def unique_dest(folder: Path, name: str) -> Path:
 def sidecar_paths(image: Path) -> list[Path]:
     """Existing caption sidecars (.txt and/or .json) next to ``image``."""
     return [
-        p for p in (image.with_suffix(C.CAPTION_TXT_EXT), image.with_suffix(C.CAPTION_JSON_EXT))
+        p
+        for p in (image.with_suffix(C.CAPTION_TXT_EXT), image.with_suffix(C.CAPTION_JSON_EXT))
         if p.is_file()
     ]
 
 
-def move_file(src: Path, dest_dir: Path, reason: str, apply: bool,
-              actions: list[Action]) -> None:
+def move_file(src: Path, dest_dir: Path, reason: str, apply: bool, actions: list[Action]) -> None:
     """Plan (and with ``apply`` perform) a move of ``src`` into ``dest_dir``."""
     dest = unique_dest(dest_dir, src.name)
     actions.append(Action("move", str(src), f"-> {dest} ({reason})"))
@@ -116,11 +140,33 @@ def move_file(src: Path, dest_dir: Path, reason: str, apply: bool,
         shutil.move(str(src), str(dest))
 
 
-def move_with_sidecars(image: Path, dest_dir: Path, reason: str, apply: bool,
-                       actions: list[Action]) -> None:
-    move_file(image, dest_dir, reason, apply, actions)
-    for sidecar in sidecar_paths(image):
-        move_file(sidecar, dest_dir, "caption of " + image.name, apply, actions)
+def move_with_sidecars(
+    image: Path,
+    dest_dir: Path,
+    reason: str,
+    apply: bool,
+    actions: list[Action],
+    reserved: set[Path],
+) -> None:
+    sources = [image, *sidecar_paths(image)]
+    counter = 0
+    while True:
+        suffix = "" if counter == 0 else f"_{counter}"
+        stem = image.stem + suffix
+        destinations = [dest_dir / f"{stem}{source.suffix}" for source in sources]
+        if all(
+            not destination.exists() and destination not in reserved for destination in destinations
+        ):
+            break
+        counter += 1
+
+    reserved.update(destinations)
+    for source, destination in zip(sources, destinations, strict=True):
+        item_reason = reason if source == image else "caption of " + image.name
+        actions.append(Action("move", str(source), f"-> {destination} ({item_reason})"))
+        if apply:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(destination))
 
 
 # --- organize ------------------------------------------------------------------
@@ -136,14 +182,16 @@ def cmd_organize(root: Path, repeats: int, concept: str, apply: bool) -> dict:
 
     loose = C.iter_images(root, recursive=False)
     actions: list[Action] = []
+    reserved: set[Path] = set()
     if loose:
         actions.append(Action("mkdir", str(dest_dir), "concept folder"))
         if apply:
             dest_dir.mkdir(parents=True, exist_ok=True)
         for image in loose:
-            move_with_sidecars(image, dest_dir, "organize", apply, actions)
-    return _result("organize", root, apply, actions,
-                   {"moved_images": len(loose), "concept_dir": str(dest_dir)})
+            move_with_sidecars(image, dest_dir, "organize", apply, actions, reserved)
+    return _result(
+        "organize", root, apply, actions, {"moved_images": len(loose), "concept_dir": str(dest_dir)}
+    )
 
 
 # --- quarantine-corrupt ----------------------------------------------------------
@@ -152,13 +200,15 @@ def cmd_organize(root: Path, repeats: int, concept: str, apply: bool) -> dict:
 def cmd_quarantine_corrupt(root: Path, apply: bool) -> dict:
     """Move images Pillow cannot decode into quarantine (training would crash)."""
     actions: list[Action] = []
+    reserved: set[Path] = set()
     corrupt = 0
     for image in C.iter_images(root):
         record = scan_dataset.probe_image(image)
         if "error" in record:
             corrupt += 1
-            move_with_sidecars(image, quarantine_dir(root),
-                               record["error"], apply, actions)
+            move_with_sidecars(
+                image, quarantine_dir(root), record["error"], apply, actions, reserved
+            )
     return _result("quarantine-corrupt", root, apply, actions, {"corrupt_images": corrupt})
 
 
@@ -175,6 +225,35 @@ def _keep_best(group_records: list[dict]) -> tuple[dict, list[dict]]:
     return ranked[0], ranked[1:]
 
 
+def merge_duplicate_groups(groups: list[list[str]]) -> list[list[str]]:
+    """Merge exact and perceptual groups into disjoint path clusters."""
+    parent: dict[str, str] = {}
+
+    def find(path: str) -> str:
+        parent.setdefault(path, path)
+        while parent[path] != path:
+            parent[path] = parent[parent[path]]
+            path = parent[path]
+        return path
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for group in groups:
+        if not group:
+            continue
+        for path in group[1:]:
+            union(group[0], path)
+
+    clusters: dict[str, list[str]] = {}
+    for path in parent:
+        clusters.setdefault(find(path), []).append(path)
+    return sorted(sorted(cluster) for cluster in clusters.values() if len(cluster) > 1)
+
+
 def cmd_dedupe(root: Path, near: bool, apply: bool) -> dict:
     """Quarantine redundant copies in exact (and, with --near, near) dup groups."""
     paths = C.iter_images(root)
@@ -189,11 +268,11 @@ def cmd_dedupe(root: Path, near: bool, apply: bool) -> dict:
                 f"--near needs <= {scan_dataset.NEAR_DUP_MAX_IMAGES} images "
                 f"(found {len(good)}); dedupe exact duplicates first"
             )
-        seen_groups = {tuple(g) for g in groups}
-        groups += [g for g in scan_dataset.group_near_duplicates(good)
-                   if tuple(g) not in seen_groups]
+        groups += scan_dataset.group_near_duplicates(good)
+    groups = merge_duplicate_groups(groups)
 
     actions: list[Action] = []
+    reserved: set[Path] = set()
     removed = 0
     for group in groups:
         group_records = [by_path[p] for p in group if p in by_path]
@@ -202,11 +281,21 @@ def cmd_dedupe(root: Path, near: bool, apply: bool) -> dict:
         best, rest = _keep_best(group_records)
         for record in rest:
             removed += 1
-            move_with_sidecars(Path(record["path"]), quarantine_dir(root),
-                               f"duplicate of {Path(best['path']).name}",
-                               apply, actions)
-    return _result("dedupe", root, apply, actions,
-                   {"duplicate_groups": len(groups), "quarantined_images": removed})
+            move_with_sidecars(
+                Path(record["path"]),
+                quarantine_dir(root),
+                f"duplicate of {Path(best['path']).name}",
+                apply,
+                actions,
+                reserved,
+            )
+    return _result(
+        "dedupe",
+        root,
+        apply,
+        actions,
+        {"duplicate_groups": len(groups), "quarantined_images": removed},
+    )
 
 
 # --- to-rgb ----------------------------------------------------------------------
@@ -239,8 +328,11 @@ def cmd_to_rgb(root: Path, apply: bool) -> dict:
             continue
         converted += 1
         backup = unique_dest(quarantine_dir(root), image.name)
-        actions.append(Action("convert", str(image),
-                              f"{record['mode']} -> RGB (original backed up to {backup})"))
+        actions.append(
+            Action(
+                "convert", str(image), f"{record['mode']} -> RGB (original backed up to {backup})"
+            )
+        )
         if apply:
             quarantine_dir(root).mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(image), str(backup))
@@ -251,9 +343,30 @@ def cmd_to_rgb(root: Path, apply: bool) -> dict:
 # --- caption rewriting helpers ----------------------------------------------------
 
 
-def _write_txt_tags(path: Path, tags: list[str], apply: bool) -> None:
+def split_txt_caption(text: str) -> tuple[list[str], str]:
+    tag_block, separator, prose = text.strip().partition(". ")
+    suffix = f". {prose}" if separator else ""
+    return CC.split_tags(tag_block), suffix
+
+
+def _write_txt_tags(path: Path, tags: list[str], suffix: str, apply: bool) -> None:
     if apply:
-        path.write_text(", ".join(tags), encoding="utf-8")
+        path.write_text(", ".join(tags) + suffix, encoding="utf-8")
+
+
+def trigger_insert_index(tags: list[str]) -> int:
+    index = 0
+    for tag in tags:
+        if (
+            tag in ANIMA_PREFIX_TAGS
+            or tag.startswith("score_")
+            or tag.startswith("year ")
+            or ANIMA_COUNT_PATTERN.fullmatch(tag)
+        ):
+            index += 1
+            continue
+        break
+    return index
 
 
 def _ordered_anima_json(obj: dict) -> dict:
@@ -280,24 +393,22 @@ def _load_json_caption(path: Path) -> Optional[dict]:
 # --- add-trigger -------------------------------------------------------------------
 
 
-def _add_trigger_txt(path: Path, trigger: str, apply: bool,
-                     actions: list[Action]) -> bool:
-    tags = CC.split_tags(C.read_text(path))
+def _add_trigger_txt(path: Path, trigger: str, apply: bool, actions: list[Action]) -> bool:
+    tags, suffix = split_txt_caption(C.read_text(path))
     key = trigger.strip().lower()
-    if tags and tags[0] == key:
+    if key in tags:
         return False
-    new_tags = [key] + [t for t in tags if t != key]
-    actions.append(Action("rewrite", str(path), f"set '{trigger}' as first tag"))
-    _write_txt_tags(path, new_tags, apply)
+    index = trigger_insert_index(tags)
+    new_tags = tags[:index] + [key] + tags[index:]
+    actions.append(Action("rewrite", str(path), f"insert trigger '{trigger}' at tag {index + 1}"))
+    _write_txt_tags(path, new_tags, suffix, apply)
     return True
 
 
-def _add_trigger_json(path: Path, trigger: str, apply: bool,
-                      actions: list[Action]) -> bool:
+def _add_trigger_json(path: Path, trigger: str, apply: bool, actions: list[Action]) -> bool:
     obj = _load_json_caption(path)
     if obj is None:
-        actions.append(Action("rewrite", str(path),
-                              "SKIPPED: invalid JSON, fix by hand or re-tag"))
+        actions.append(Action("rewrite", str(path), "SKIPPED: invalid JSON, fix by hand or re-tag"))
         return False
     current = str(obj.get("character", "")).strip()
     if current.lower() == trigger.strip().lower():
@@ -310,14 +421,14 @@ def _add_trigger_json(path: Path, trigger: str, apply: bool,
 
 
 def cmd_add_trigger(root: Path, trigger: str, apply: bool) -> dict:
-    """Make ``trigger`` the first .txt tag / the JSON ``character`` everywhere."""
+    """Ensure ``trigger`` exists in every .txt / JSON caption."""
     if not trigger.strip():
         raise ValueError("--trigger must not be empty")
     actions: list[Action] = []
     rewritten = 0
     missing = 0
     for image in C.iter_images(root):
-        caption = C.find_caption_path(image)
+        caption = C.find_caption_path(image, prefer_json=True)
         if caption is None:
             missing += 1
             continue
@@ -326,19 +437,26 @@ def cmd_add_trigger(root: Path, trigger: str, apply: bool) -> dict:
         else:
             changed = _add_trigger_txt(caption, trigger, apply, actions)
         rewritten += int(changed)
-    return _result("add-trigger", root, apply, actions,
-                   {"rewritten_captions": rewritten,
-                    "missing_captions": missing,
-                    "hint_for_missing": "run the WD14 tagger first (POST /api/interrogate)"
-                                        if missing else ""})
+    return _result(
+        "add-trigger",
+        root,
+        apply,
+        actions,
+        {
+            "rewritten_captions": rewritten,
+            "missing_captions": missing,
+            "hint_for_missing": "run tag_dataset.py for Anima or the trainer WD14 tagger"
+            if missing
+            else "",
+        },
+    )
 
 
 # --- strip-tags --------------------------------------------------------------------
 
 
-def _strip_txt(path: Path, drop: frozenset[str], apply: bool,
-               actions: list[Action]) -> bool:
-    tags = CC.split_tags(C.read_text(path))
+def _strip_txt(path: Path, drop: frozenset[str], apply: bool, actions: list[Action]) -> bool:
+    tags, suffix = split_txt_caption(C.read_text(path))
     kept: list[str] = []
     seen: set[str] = set()
     for tag in tags:
@@ -350,12 +468,11 @@ def _strip_txt(path: Path, drop: frozenset[str], apply: bool,
         return False
     removed = len(tags) - len(kept)
     actions.append(Action("rewrite", str(path), f"removed {removed} tag(s)"))
-    _write_txt_tags(path, kept, apply)
+    _write_txt_tags(path, kept, suffix, apply)
     return True
 
 
-def _strip_json(path: Path, drop: frozenset[str], apply: bool,
-                actions: list[Action]) -> bool:
+def _strip_json(path: Path, drop: frozenset[str], apply: bool, actions: list[Action]) -> bool:
     obj = _load_json_caption(path)
     if obj is None:
         return False
@@ -387,7 +504,7 @@ def cmd_strip_tags(root: Path, extra_tags: str, apply: bool) -> dict:
     actions: list[Action] = []
     rewritten = 0
     for image in C.iter_images(root):
-        caption = C.find_caption_path(image)
+        caption = C.find_caption_path(image, prefer_json=True)
         if caption is None:
             continue
         if caption.suffix.lower() == C.CAPTION_JSON_EXT:
@@ -395,8 +512,13 @@ def cmd_strip_tags(root: Path, extra_tags: str, apply: bool) -> dict:
         else:
             changed = _strip_txt(caption, drop, apply, actions)
         rewritten += int(changed)
-    return _result("strip-tags", root, apply, actions,
-                   {"rewritten_captions": rewritten, "dropped_tag_set": sorted(drop)})
+    return _result(
+        "strip-tags",
+        root,
+        apply,
+        actions,
+        {"rewritten_captions": rewritten, "dropped_tag_set": sorted(drop)},
+    )
 
 
 # --- CLI -----------------------------------------------------------------------------
@@ -437,17 +559,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     add("quarantine-corrupt", "set aside images that cannot be decoded")
 
     p_dedupe = add("dedupe", "quarantine redundant duplicate images")
-    p_dedupe.add_argument("--near", action="store_true",
-                          help="also collapse visually near-identical clusters")
+    p_dedupe.add_argument(
+        "--near", action="store_true", help="also collapse visually near-identical clusters"
+    )
 
     add("to-rgb", "convert non-RGB images to RGB (originals backed up)")
 
-    p_trig = add("add-trigger", "make the trigger word the first tag in every caption")
+    p_trig = add("add-trigger", "ensure the trigger word exists in every caption")
     p_trig.add_argument("--trigger", required=True)
 
     p_strip = add("strip-tags", "remove artefact tags and per-caption duplicate tags")
-    p_strip.add_argument("--tags", default="",
-                         help="extra comma-separated tags to remove")
+    p_strip.add_argument("--tags", default="", help="extra comma-separated tags to remove")
 
     args = parser.parse_args(argv)
     root = Path(args.path)

@@ -36,11 +36,6 @@ def main():
                 page.wait_for_timeout(5000)
                 page.get_by_text("Upload files", exact=True).first.click()
                 page.wait_for_timeout(4000)
-                name = "?"
-                try:
-                    name = page.locator("h1, h2").first.inner_text()[:60]
-                except Exception:
-                    pass
                 rows = []
                 for el in page.locator("text=/\\.safetensors/").all():
                     try:
@@ -67,7 +62,7 @@ def main():
     for mid, (rows, sizes) in results.items():
         status = "OK" if rows else "!! NO FILE"
         log(f"{status}  {mid}  {rows} {sizes}")
-    return 0
+    return 1 if any(not rows for rows, _sizes in results.values()) else 0
 
 
 if __name__ == "__main__":
